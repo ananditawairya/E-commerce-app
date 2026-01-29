@@ -46,7 +46,7 @@ const typeDefs = gql`
     category: String!
     basePrice: Float!
     images: [String!] = []
-    variants: [VariantInput!] = []
+    variants: [VariantInput!]!
   }
 
   input ProductUpdateInput {
