@@ -70,6 +70,7 @@ const typeDefs = gql`
     createProduct(input: ProductInput!): Product!
     updateProduct(id: ID!, input: ProductUpdateInput!): Product!
     deleteProduct(id: ID!): Boolean!
+    deductStock(productId: ID!, variantId: ID!, quantity: Int!): Boolean!
   }
 `;
 

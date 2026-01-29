@@ -148,6 +148,54 @@ const resolvers = {
         throw new Error(error.message);
       }
     },
+
+    // CHANGE: Add stock deduction mutation for order fulfillment
+    deductStock: async (_, { productId, variantId, quantity }, context) => {
+      try {
+        console.log(`📦 Deducting stock: Product ${productId}, Variant ${variantId}, Quantity ${quantity}`);
+
+        // CHANGE: Find product and specific variant
+        const product = await Product.findById(productId);
+        if (!product) {
+          throw new Error('Product not found');
+        }
+
+        const variant = product.variants.find(v => v._id === variantId);
+        if (!variant) {
+          throw new Error('Variant not found');
+        }
+
+        // CHANGE: Validate sufficient stock before deduction
+        if (variant.stock < quantity) {
+          throw new Error(
+            `Insufficient stock for deduction. Available: ${variant.stock}, Requested: ${quantity}`
+          );
+        }
+
+        // CHANGE: Perform atomic stock deduction using MongoDB's $inc operator
+        const updateResult = await Product.updateOne(
+          {
+            _id: productId,
+            'variants._id': variantId,
+            'variants.stock': { $gte: quantity }, // Ensure stock is still sufficient
+          },
+          {
+            $inc: { 'variants.$.stock': -quantity },
+          }
+        );
+
+        // CHANGE: Check if update was successful (handles race conditions)
+        if (updateResult.modifiedCount === 0) {
+          throw new Error('Stock deduction failed. Stock may have changed during transaction.');
+        }
+
+        console.log(`✅ Stock deducted successfully: ${quantity} units from variant ${variantId}`);
+        return true;
+      } catch (error) {
+        console.error('❌ Stock deduction error:', error.message);
+        throw new Error(error.message);
+      }
+    },
   },
 
   // Field resolvers for computed properties

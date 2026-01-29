@@ -1,11 +1,12 @@
 // backend/order-service/src/resolvers/orderResolvers.js
 
-const Cart = require('../models/Cart'); 
-const Order = require('../models/Order'); 
+const Cart = require('../models/Cart');
+const Order = require('../models/Order');
 const { requireBuyer, requireSeller, authenticate } = require('../middleware/auth');
 const axios = require('axios');
 
-const getProductDetails = async (productId) => {
+// CHANGE: Enhanced function to get product details including variant stock
+const getProductDetails = async (productId, variantId = null) => {
   try {
     const response = await axios.post(
       `${process.env.PRODUCT_SERVICE_URL}/graphql`,
@@ -16,15 +17,69 @@ const getProductDetails = async (productId) => {
               id
               name
               sellerId
+              variants {
+                id
+                name
+                stock
+              }
             }
           }
         `,
         variables: { id: productId },
       }
     );
-    return response.data.data.product;
+
+    const product = response.data.data.product;
+    if (!product) {
+      throw new Error('Product not found');
+    }
+
+    // CHANGE: If variantId is provided, find the specific variant and return its stock
+    if (variantId) {
+      const variant = product.variants.find(v => v.id === variantId);
+      if (!variant) {
+        throw new Error('Variant not found');
+      }
+      return {
+        ...product,
+        availableStock: variant.stock,
+        variantName: variant.name,
+      };
+    }
+
+    // CHANGE: If no variant, return total stock from all variants
+    const totalStock = product.variants.reduce((sum, v) => sum + v.stock, 0);
+    return {
+      ...product,
+      availableStock: totalStock,
+    };
   } catch (error) {
-    throw new Error('Failed to fetch product details');
+    throw new Error(`Failed to fetch product details: ${error.message}`);
+  }
+};
+
+// CHANGE: Add function to deduct stock from product-service
+const deductStock = async (productId, variantId, quantity) => {
+  try {
+    const response = await axios.post(
+      `${process.env.PRODUCT_SERVICE_URL}/graphql`,
+      {
+        query: `
+          mutation DeductStock($productId: ID!, $variantId: ID!, $quantity: Int!) {
+            deductStock(productId: $productId, variantId: $variantId, quantity: $quantity)
+          }
+        `,
+        variables: { productId, variantId, quantity },
+      }
+    );
+
+    if (response.data.errors) {
+      throw new Error(response.data.errors[0].message);
+    }
+
+    return response.data.data.deductStock;
+  } catch (error) {
+    throw new Error(`Failed to deduct stock: ${error.message}`);
   }
 };
 
@@ -40,12 +95,12 @@ const resolvers = {
       try {
         const user = await requireBuyer(context);
         let cart = await Cart.findOne({ userId: user.userId });
-        
+
         if (!cart) {
           cart = new Cart({ userId: user.userId, items: [] });
           await cart.save();
         }
-        
+
         return cart;
       } catch (error) {
         throw new Error(error.message);
@@ -78,14 +133,14 @@ const resolvers = {
       try {
         const user = await authenticate(context);
         const order = await Order.findById(id);
-        
+
         if (!order) {
           throw new Error('Order not found');
         }
 
         // Check authorization
         const isBuyer = user.role === 'buyer' && order.buyerId === user.userId;
-        const isSeller = user.role === 'seller' && 
+        const isSeller = user.role === 'seller' &&
           order.items.some(item => item.sellerId === user.userId);
 
         if (!isBuyer && !isSeller) {
@@ -103,19 +158,36 @@ const resolvers = {
     addToCart: async (_, { productId, variantId, quantity, price }, context) => {
       try {
         const user = await requireBuyer(context);
-        let cart = await Cart.findOne({ userId: user.userId });
 
+        // CHANGE: Validate stock availability before adding to cart
+        const productDetails = await getProductDetails(productId, variantId);
+
+        let cart = await Cart.findOne({ userId: user.userId });
         if (!cart) {
           cart = new Cart({ userId: user.userId, items: [] });
         }
 
-        const existingItemIndex = cart.items.findIndex(
-          item => item.productId === productId && 
-                  (item.variantId || null) === (variantId || null)
+        // CHANGE: Calculate total requested quantity (existing + new)
+        const existingItem = cart.items.find(
+          item => item.productId === productId &&
+            (item.variantId || null) === (variantId || null)
         );
+        const existingQuantity = existingItem ? existingItem.quantity : 0;
+        const totalRequestedQuantity = existingQuantity + quantity;
 
-        if (existingItemIndex > -1) {
-          cart.items[existingItemIndex].quantity += quantity;
+        // CHANGE: Check if total requested quantity exceeds available stock
+        if (totalRequestedQuantity > productDetails.availableStock) {
+          throw new Error(
+            `Insufficient stock. Available: ${productDetails.availableStock}, ` +
+            `Already in cart: ${existingQuantity}, ` +
+            `Requested: ${quantity}. ` +
+            `Maximum you can add: ${productDetails.availableStock - existingQuantity}`
+          );
+        }
+
+        // CHANGE: Add or update cart item only if stock is sufficient
+        if (existingItem) {
+          existingItem.quantity = totalRequestedQuantity;
         } else {
           cart.items.push({ productId, variantId, quantity, price });
         }
@@ -130,6 +202,19 @@ const resolvers = {
     updateCartItem: async (_, { productId, variantId, quantity }, context) => {
       try {
         const user = await requireBuyer(context);
+
+        // CHANGE: Validate stock availability when updating quantity
+        if (quantity > 0) {
+          const productDetails = await getProductDetails(productId, variantId);
+
+          if (quantity > productDetails.availableStock) {
+            throw new Error(
+              `Insufficient stock. Available: ${productDetails.availableStock}, ` +
+              `Requested: ${quantity}`
+            );
+          }
+        }
+
         const cart = await Cart.findOne({ userId: user.userId });
 
         if (!cart) {
@@ -137,8 +222,8 @@ const resolvers = {
         }
 
         const itemIndex = cart.items.findIndex(
-          item => item.productId === productId && 
-                  (item.variantId || null) === (variantId || null)
+          item => item.productId === productId &&
+            (item.variantId || null) === (variantId || null)
         );
 
         if (itemIndex === -1) {
@@ -168,8 +253,8 @@ const resolvers = {
         }
 
         cart.items = cart.items.filter(
-          item => !(item.productId === productId && 
-                   (item.variantId || null) === (variantId || null))
+          item => !(item.productId === productId &&
+            (item.variantId || null) === (variantId || null))
         );
 
         await cart.save();
@@ -201,15 +286,32 @@ const resolvers = {
           throw new Error('Cart is empty');
         }
 
+        // CHANGE: Validate stock availability for all items before checkout
+        const stockValidationPromises = cart.items.map(async (item) => {
+          const productDetails = await getProductDetails(item.productId, item.variantId);
+
+          if (item.quantity > productDetails.availableStock) {
+            throw new Error(
+              `Insufficient stock for ${productDetails.name}${item.variantId ? ` (${productDetails.variantName})` : ''}. ` +
+              `Available: ${productDetails.availableStock}, Requested: ${item.quantity}`
+            );
+          }
+
+          return productDetails;
+        });
+
+        // CHANGE: Wait for all stock validations to complete
+        const productDetailsArray = await Promise.all(stockValidationPromises);
+
         // Fetch product details for each item
         const orderItems = await Promise.all(
-          cart.items.map(async (item) => {
-            const product = await getProductDetails(item.productId);
+          cart.items.map(async (item, index) => {
+            const product = productDetailsArray[index];
             return {
               productId: item.productId,
               productName: product.name,
               variantId: item.variantId,
-              variantName: item.variantId ? 'Variant' : null,
+              variantName: item.variantId ? product.variantName : null,
               quantity: item.quantity,
               price: item.price,
               sellerId: product.sellerId,
@@ -233,6 +335,26 @@ const resolvers = {
         });
 
         await order.save();
+
+        // CHANGE: Deduct stock from product-service after successful order creation
+        console.log('📦 Deducting stock for order items...');
+        const stockDeductionPromises = cart.items.map(async (item) => {
+          if (!item.variantId) {
+            throw new Error(`Variant ID is required for stock deduction`);
+          }
+          
+          try {
+            await deductStock(item.productId, item.variantId, item.quantity);
+            console.log(`✅ Stock deducted: Product ${item.productId}, Variant ${item.variantId}, Quantity ${item.quantity}`);
+          } catch (error) {
+            console.error(`❌ Failed to deduct stock for product ${item.productId}:`, error.message);
+            throw error;
+          }
+        });
+
+        // CHANGE: Wait for all stock deductions to complete
+        await Promise.all(stockDeductionPromises);
+        console.log('✅ All stock deductions completed successfully');
 
         // Clear cart
         cart.items = [];
