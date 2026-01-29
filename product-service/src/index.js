@@ -16,11 +16,11 @@ app.use(express.json({
   limit: '50mb',  // Increased from default 1mb to handle base64 images
   parameterLimit: 50000 
 }));
-app.use(express.urlencoded({ 
-  limit: '50mb', 
-  extended: true,
-  parameterLimit: 50000 
-}));
+// app.use(express.urlencoded({ 
+//   limit: '50mb', 
+//   extended: true,
+//   parameterLimit: 50000 
+// }));
 
 // CHANGE: Add request logging middleware BEFORE Apollo
 app.use((req, res, next) => {
