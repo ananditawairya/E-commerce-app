@@ -1,34 +1,40 @@
 // backend/auth-service/src/resolvers/authResolvers.js
+// CHANGE: Modified to call REST API instead of direct database access
 
-const User = require('../models/User');
-const {
-  generateAccessToken,
-  generateRefreshToken,
-  verifyAccessToken,
-  verifyRefreshToken,
-} = require('../utils/jwt');
+const axios = require('axios');
+
+const API_BASE_URL = process.env.AUTH_API_URL || 'http://localhost:4001/api/users';
 
 const resolvers = {
   Query: {
-    me: async (_, { token }) => {
+    me: async (_, { token }, context) => {
       try {
-        const decoded = verifyAccessToken(token);
-        const user = await User.findById(decoded.userId);
-        if (!user) throw new Error('User not found');
-        return user;
+        // CHANGE: Call REST API instead of direct database query
+        const response = await axios.get(`${API_BASE_URL}/me`, {
+          params: { token },
+          headers: {
+            'X-Correlation-ID': context.correlationId,
+          },
+        });
+        return response.data;
       } catch (error) {
-        throw new Error('Authentication failed');
+        throw new Error(error.response?.data?.message || 'Authentication failed');
       }
     },
 
-    verifyToken: async (_, { token }) => {
+    verifyToken: async (_, { token }, context) => {
       try {
-        const decoded = verifyAccessToken(token);
-        return {
-          userId: decoded.userId,
-          role: decoded.role,
-          valid: true,
-        };
+        // CHANGE: Call REST API instead of direct JWT verification
+        const response = await axios.post(
+          `${API_BASE_URL}/verify-token`,
+          { token },
+          {
+            headers: {
+              'X-Correlation-ID': context.correlationId,
+            },
+          }
+        );
+        return response.data;
       } catch (error) {
         return {
           userId: null,
@@ -40,120 +46,73 @@ const resolvers = {
   },
 
   Mutation: {
-    register: async (_, { email, password, name, role }) => {
+    register: async (_, { email, password, name, role }, context) => {
       try {
-        // Check if user exists
-        const existingUser = await User.findOne({ email });
-        if (existingUser) {
-          throw new Error('Email already registered');
-        }
-
-        // Validate role
-        if (!['buyer', 'seller'].includes(role)) {
-          throw new Error('Invalid role. Must be buyer or seller');
-        }
-
-        // Create new user
-        const user = new User({
-          email,
-          password,
-          name,
-          role,
-        });
-
-        await user.save();
-
-        // Generate tokens
-        const accessToken = generateAccessToken(user._id, user.role);
-        const refreshToken = generateRefreshToken(user._id);
-
-        // Save refresh token
-        user.refreshTokens.push({ token: refreshToken });
-        await user.save();
-
-        return {
-          user,
-          accessToken,
-          refreshToken,
-        };
-      } catch (error) {
-        throw new Error(error.message);
-      }
-    },
-
-    login: async (_, { email, password }) => {
-      try {
-        // Find user
-        const user = await User.findOne({ email });
-        if (!user) {
-          throw new Error('Invalid credentials');
-        }
-
-        // Check password
-        const isValidPassword = await user.comparePassword(password);
-        if (!isValidPassword) {
-          throw new Error('Invalid credentials');
-        }
-
-        // Generate tokens
-        const accessToken = generateAccessToken(user._id, user.role);
-        const refreshToken = generateRefreshToken(user._id);
-
-        // Save refresh token
-        user.refreshTokens.push({ token: refreshToken });
-        await user.save();
-
-        return {
-          user,
-          accessToken,
-          refreshToken,
-        };
-      } catch (error) {
-        throw new Error(error.message);
-      }
-    },
-
-    refreshToken: async (_, { refreshToken }) => {
-      try {
-        // Verify refresh token
-        const decoded = verifyRefreshToken(refreshToken);
-
-        // Find user and check if refresh token exists
-        const user = await User.findById(decoded.userId);
-        if (!user) {
-          throw new Error('User not found');
-        }
-
-        const tokenExists = user.refreshTokens.some(
-          (rt) => rt.token === refreshToken
+        // CHANGE: Call REST API instead of direct database operation
+        const response = await axios.post(
+          `${API_BASE_URL}/register`,
+          { email, password, name, role },
+          {
+            headers: {
+              'X-Correlation-ID': context.correlationId,
+            },
+          }
         );
-
-        if (!tokenExists) {
-          throw new Error('Invalid refresh token');
-        }
-
-        // Generate new access token
-        const accessToken = generateAccessToken(user._id, user.role);
-
-        return { accessToken };
+        return response.data;
       } catch (error) {
-        throw new Error('Invalid refresh token');
+        throw new Error(error.response?.data?.message || error.message);
       }
     },
 
-    logout: async (_, { refreshToken }) => {
+    login: async (_, { email, password }, context) => {
       try {
-        const decoded = verifyRefreshToken(refreshToken);
-        const user = await User.findById(decoded.userId);
+        // CHANGE: Call REST API instead of direct database operation
+        const response = await axios.post(
+          `${API_BASE_URL}/login`,
+          { email, password },
+          {
+            headers: {
+              'X-Correlation-ID': context.correlationId,
+            },
+          }
+        );
+        return response.data;
+      } catch (error) {
+        throw new Error(error.response?.data?.message || error.message);
+      }
+    },
 
-        if (user) {
-          user.refreshTokens = user.refreshTokens.filter(
-            (rt) => rt.token !== refreshToken
-          );
-          await user.save();
-        }
+    refreshToken: async (_, { refreshToken }, context) => {
+      try {
+        // CHANGE: Call REST API instead of direct database operation
+        const response = await axios.post(
+          `${API_BASE_URL}/refresh-token`,
+          { refreshToken },
+          {
+            headers: {
+              'X-Correlation-ID': context.correlationId,
+            },
+          }
+        );
+        return response.data;
+      } catch (error) {
+        throw new Error(error.response?.data?.message || 'Invalid refresh token');
+      }
+    },
 
-        return true;
+    logout: async (_, { refreshToken }, context) => {
+      try {
+        // CHANGE: Call REST API instead of direct database operation
+        const response = await axios.post(
+          `${API_BASE_URL}/logout`,
+          { refreshToken },
+          {
+            headers: {
+              'X-Correlation-ID': context.correlationId,
+            },
+          }
+        );
+        return response.data.success;
       } catch (error) {
         return false;
       }

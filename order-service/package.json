@@ -14,7 +14,8 @@
     "mongoose": "^7.0.3",
     "dotenv": "^16.0.3",
     "cors": "^2.8.5",
-    "axios": "^1.4.0"
+    "axios": "^1.4.0",
+    "uuid": "^9.0.1"
   },
   "devDependencies": {
     "nodemon": "^2.0.22"

@@ -1,4 +1,5 @@
 // backend/auth-service/src/index.js
+// CHANGE: Modified to include REST API server
 
 require('dotenv').config();
 const express = require('express');
@@ -8,6 +9,10 @@ const cors = require('cors');
 
 const typeDefs = require('./schema/authSchema');
 const resolvers = require('./resolvers/authResolvers');
+// CHANGE: Import REST API components
+const userRoutes = require('./api/routes/userRoutes');
+const logger = require('./api/middleware/logger');
+const errorHandler = require('./api/middleware/errorHandler');
 
 const app = express();
 
@@ -15,11 +20,25 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// CHANGE: Add logging middleware
+app.use(logger);
+
+// CHANGE: Mount REST API routes
+app.use('/api/users', userRoutes);
+
+// CHANGE: Add error handling middleware (must be after routes)
+app.use(errorHandler);
+
 // Apollo Server
 const server = new ApolloServer({
   typeDefs,
   resolvers,
   introspection: true,
+  // CHANGE: Pass correlation ID to GraphQL context
+  context: ({ req }) => ({
+    correlationId: req.correlationId,
+    log: req.log,
+  }),
 });
 
 // Database connection
@@ -42,6 +61,7 @@ const startServer = async () => {
   const PORT = process.env.PORT || 4001;
   app.listen(PORT, () => {
     console.log(`🚀 Auth Service running on http://localhost:${PORT}${server.graphqlPath}`);
+    console.log(`📡 REST API available at http://localhost:${PORT}/api/users`);
   });
 };
 
