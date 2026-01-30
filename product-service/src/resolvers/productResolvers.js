@@ -11,7 +11,6 @@ const resolvers = {
   Query: {
     products: async (_, { search, category, limit = 20, offset = 0 }, context) => {
       try {
-        // CHANGE: Call REST API instead of direct database query
         const response = await axios.get(API_BASE_URL, {
           params: { search, category, limit, offset },
           headers: {
@@ -26,7 +25,6 @@ const resolvers = {
 
     product: async (_, { id }, context) => {
       try {
-        // CHANGE: Call REST API instead of direct database query
         const response = await axios.get(`${API_BASE_URL}/${id}`, {
           headers: {
             'X-Correlation-ID': context.correlationId,
@@ -42,7 +40,6 @@ const resolvers = {
       try {
         const user = await requireSeller(context);
         
-        // CHANGE: Call REST API instead of direct database query
         const response = await axios.get(`${API_BASE_URL}/seller/${user.userId}`, {
           headers: {
             'X-Correlation-ID': context.correlationId,
@@ -56,7 +53,6 @@ const resolvers = {
 
     categories: async (_, __, context) => {
       try {
-        // CHANGE: Call REST API instead of direct database query
         const response = await axios.get(`${API_BASE_URL}/categories`, {
           headers: {
             'X-Correlation-ID': context.correlationId,
@@ -74,7 +70,6 @@ const resolvers = {
       try {
         const user = await requireSeller(context);
 
-        // CHANGE: Call REST API instead of direct database operation
         const response = await axios.post(
           API_BASE_URL,
           { sellerId: user.userId, input },
@@ -94,7 +89,6 @@ const resolvers = {
       try {
         const user = await requireSeller(context);
 
-        // CHANGE: Call REST API instead of direct database operation
         const response = await axios.put(
           `${API_BASE_URL}/${id}`,
           { sellerId: user.userId, input },
@@ -114,7 +108,6 @@ const resolvers = {
       try {
         const user = await requireSeller(context);
 
-        // CHANGE: Call REST API instead of direct database operation
         await axios.delete(`${API_BASE_URL}/${id}`, {
           data: { sellerId: user.userId },
           headers: {
@@ -129,7 +122,6 @@ const resolvers = {
 
     deductStock: async (_, { productId, variantId, quantity }, context) => {
       try {
-        // CHANGE: Call REST API instead of direct database operation
         await axios.post(
           `${API_BASE_URL}/${productId}/deduct-stock`,
           { variantId, quantity },
@@ -157,20 +149,32 @@ const resolvers = {
   },
 
   Variant: {
+    // CHANGE: Removed parent() calls - access parent product from GraphQL info context
     effectiveDescription: (variant, _, __, info) => {
-      const product = info.variableValues.product || variant.parent();
-      return variant.description || product.description;
+      // CHANGE: Get parent product from the source object in GraphQL execution
+      const product = info.path.prev && info.path.prev.key === 'variants' 
+        ? info.path.prev.prev.result 
+        : null;
+      
+      return variant.description || (product ? product.description : '');
     },
 
     effectiveImages: (variant, _, __, info) => {
-      const product = info.variableValues.product || variant.parent();
-      return variant.images && variant.images.length > 0 ? variant.images : product.images;
+      // CHANGE: Get parent product from the source object in GraphQL execution
+      const product = info.path.prev && info.path.prev.key === 'variants' 
+        ? info.path.prev.prev.result 
+        : null;
+      
+      return variant.images && variant.images.length > 0 
+        ? variant.images 
+        : (product ? product.images : []);
     },
 
     effectivePrice: (variant, _, __, info) => {
-      const product = info.path.prev.key === 'variants' ?
-        info.rootValue :
-        variant.parent();
+      // CHANGE: Get parent product from the source object in GraphQL execution
+      const product = info.path.prev && info.path.prev.key === 'variants' 
+        ? info.path.prev.prev.result 
+        : null;
 
       if (!product || typeof product.basePrice !== 'number') {
         return variant.priceModifier || 0;

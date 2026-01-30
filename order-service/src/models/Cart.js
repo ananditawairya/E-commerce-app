@@ -30,4 +30,22 @@ const cartSchema = new mongoose.Schema({
   timestamps: true,
 });
 
+// CHANGE: Configure toJSON to map _id to id for GraphQL compatibility
+cartSchema.set('toJSON', {
+  virtuals: true,
+  transform: (doc, ret) => {
+    ret.id = ret._id.toString();
+    delete ret._id;
+    delete ret.__v;
+    // CHANGE: Transform cart items to include id field
+    if (ret.items) {
+      ret.items = ret.items.map(item => ({
+        ...item,
+        id: item._id ? item._id.toString() : `${item.productId}-${item.variantId || 'default'}`,
+      }));
+    }
+    return ret;
+  }
+});
+
 module.exports = mongoose.model('Cart', cartSchema);

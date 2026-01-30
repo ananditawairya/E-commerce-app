@@ -1,5 +1,6 @@
 // backend/order-service/src/models/Order.js
 const mongoose = require('mongoose');
+
 const orderItemSchema = new mongoose.Schema({
   productId: {
     type: String,
@@ -60,6 +61,17 @@ const orderSchema = new mongoose.Schema({
   },
 }, {
   timestamps: true,
+});
+
+// CHANGE: Configure toJSON to map _id to id for GraphQL compatibility
+orderSchema.set('toJSON', {
+  virtuals: true,
+  transform: (doc, ret) => {
+    ret.id = ret._id.toString();
+    delete ret._id;
+    delete ret.__v;
+    return ret;
+  }
 });
 
 // Index for seller queries

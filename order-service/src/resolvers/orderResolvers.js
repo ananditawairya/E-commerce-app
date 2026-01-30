@@ -61,7 +61,7 @@ const resolvers = {
     myCart: async (_, __, context) => {
       try {
         const user = await requireBuyer(context);
-        
+
         // CHANGE: Use CART_API_URL constant for clarity
         const response = await axios.get(
           `${CART_API_URL}/${user.userId}`,
@@ -80,7 +80,7 @@ const resolvers = {
     myOrders: async (_, __, context) => {
       try {
         const user = await requireBuyer(context);
-        
+
         // CHANGE: Use ORDERS_API_URL constant for clarity
         const response = await axios.get(
           `${ORDERS_API_URL}/buyer/${user.userId}`,
@@ -99,7 +99,7 @@ const resolvers = {
     sellerOrders: async (_, __, context) => {
       try {
         const user = await requireSeller(context);
-        
+
         // CHANGE: Use ORDERS_API_URL constant for clarity
         const response = await axios.get(
           `${ORDERS_API_URL}/seller/${user.userId}`,
@@ -118,7 +118,7 @@ const resolvers = {
     order: async (_, { id }, context) => {
       try {
         const user = await authenticate(context);
-        
+
         // CHANGE: Use ORDERS_API_URL constant for clarity
         const response = await axios.get(
           `${ORDERS_API_URL}/${id}`,
@@ -128,7 +128,7 @@ const resolvers = {
             },
           }
         );
-        
+
         const order = response.data;
 
         // Check authorization
@@ -174,11 +174,11 @@ const resolvers = {
         const totalRequestedQuantity = existingQuantity + quantity;
 
         if (totalRequestedQuantity > stockInfo.stock) {
+          // CHANGE: Improved error message with clearer guidance
           throw new Error(
-            `Insufficient stock. Available: ${stockInfo.stock}, ` +
-            `Already in cart: ${existingQuantity}, ` +
-            `Requested: ${quantity}. ` +
-            `Maximum you can add: ${stockInfo.stock - existingQuantity}`
+            `Cannot add ${quantity} units. You already have ${existingQuantity} in cart. ` +
+            `Product has ${stockInfo.stock} total stock. ` +
+            `You can add up to ${Math.max(0, stockInfo.stock - existingQuantity)} more units.`
           );
         }
 
@@ -345,7 +345,7 @@ const resolvers = {
           if (!item.variantId) {
             throw new Error(`Variant ID is required for stock deduction`);
           }
-          
+
           try {
             await deductStock(item.productId, item.variantId, item.quantity, order.orderId, context.correlationId);
             context.log.info({

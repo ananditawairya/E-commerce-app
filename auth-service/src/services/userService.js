@@ -11,14 +11,7 @@ const {
 
 class UserService {
   async createUser({ email, password, name, role }) {
-    // Check if user exists
-    const existingUser = await User.findOne({ email });
-    if (existingUser) {
-      const error = new Error('Email already registered');
-      error.code = 'USER_EXISTS';
-      throw error;
-    }
-
+    // CHANGE: Removed redundant findOne check - rely on MongoDB unique index for atomicity
     // Validate role
     if (!['buyer', 'seller'].includes(role)) {
       const error = new Error('Invalid role. Must be buyer or seller');
@@ -26,23 +19,34 @@ class UserService {
       throw error;
     }
 
-    // Create new user
-    const user = new User({ email, password, name, role });
-    await user.save();
+    // CHANGE: Use try-catch to handle duplicate key error from MongoDB
+    try {
+      // Create new user
+      const user = new User({ email, password, name, role });
+      await user.save();
 
-    // Generate tokens
-    const accessToken = generateAccessToken(user._id, user.role);
-    const refreshToken = generateRefreshToken(user._id);
+      // Generate tokens
+      const accessToken = generateAccessToken(user._id, user.role);
+      const refreshToken = generateRefreshToken(user._id);
 
-    // Save refresh token
-    user.refreshTokens.push({ token: refreshToken });
-    await user.save();
+      // Save refresh token
+      user.refreshTokens.push({ token: refreshToken });
+      await user.save();
 
-    return {
-      user: user.toJSON(),
-      accessToken,
-      refreshToken,
-    };
+      return {
+        user: user.toJSON(),
+        accessToken,
+        refreshToken,
+      };
+    } catch (error) {
+      // CHANGE: Handle MongoDB duplicate key error (code 11000)
+      if (error.code === 11000) {
+        const duplicateError = new Error('Email already registered');
+        duplicateError.code = 'USER_EXISTS';
+        throw duplicateError;
+      }
+      throw error;
+    }
   }
 
   async authenticateUser({ email, password }) {

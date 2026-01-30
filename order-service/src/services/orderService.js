@@ -13,7 +13,8 @@ class OrderService {
       await cart.save();
     }
 
-    return cart;
+    // CHANGE: Ensure toJSON is called to map _id to id
+    return cart.toJSON();
   }
 
   async addToCart(userId, { productId, variantId, quantity, price }) {
@@ -35,7 +36,8 @@ class OrderService {
     }
 
     await cart.save();
-    return cart;
+    // CHANGE: Ensure toJSON is called to map _id to id
+    return cart.toJSON();
   }
 
   async updateCartItem(userId, { productId, variantId, quantity }) {
@@ -65,7 +67,8 @@ class OrderService {
     }
 
     await cart.save();
-    return cart;
+    // CHANGE: Ensure toJSON is called to map _id to id
+    return cart.toJSON();
   }
 
   async removeFromCart(userId, { productId, variantId }) {
@@ -83,7 +86,8 @@ class OrderService {
     );
 
     await cart.save();
-    return cart;
+    // CHANGE: Ensure toJSON is called to map _id to id
+    return cart.toJSON();
   }
 
   async clearCart(userId) {

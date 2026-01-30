@@ -54,12 +54,18 @@ userSchema.methods.comparePassword = async function(candidatePassword) {
   return await bcrypt.compare(candidatePassword, this.password);
 };
 
-// Remove password from JSON output
-userSchema.methods.toJSON = function() {
-  const user = this.toObject();
-  delete user.password;
-  delete user.refreshTokens;
-  return user;
-};
+// CHANGE: Configure toJSON to map _id to id and enable virtuals
+userSchema.set('toJSON', {
+  virtuals: true,
+  transform: (doc, ret) => {
+    // CHANGE: Map MongoDB _id to GraphQL id field
+    ret.id = ret._id.toString();
+    delete ret._id;
+    delete ret.__v;
+    delete ret.password;
+    delete ret.refreshTokens;
+    return ret;
+  }
+});
 
 module.exports = mongoose.model('User', userSchema);

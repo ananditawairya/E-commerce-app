@@ -69,7 +69,6 @@ const productSchema = new mongoose.Schema({
   }],
   variants: {
     type: [variantSchema],
-    // CHANGE: Make variants array required and enforce minimum length
     required: true,
     validate: {
       validator: function(variants) {
@@ -89,19 +88,15 @@ const productSchema = new mongoose.Schema({
 
 // Pre-save hook to generate SKUs for variants
 productSchema.pre('save', function(next) {
-  // CHANGE: Validate variants exist before processing
   if (!this.variants || this.variants.length === 0) {
     return next(new Error('At least one product variant is required'));
   }
 
-  // Generate SKUs for variants that don't have them
   this.variants.forEach((variant, index) => {
-    // Ensure variant has an ID
     if (!variant._id) {
       variant._id = uuidv4();
     }
     
-    // Generate SKU if not provided
     if (!variant.sku) {
       const sellerId = this.sellerId.substring(0, 4).toUpperCase();
       const productId = this._id.substring(0, 8).toUpperCase();
@@ -112,6 +107,50 @@ productSchema.pre('save', function(next) {
   });
   
   next();
+});
+
+// CHANGE: Configure toJSON to map _id to id for both Product and Variant
+productSchema.set('toJSON', {
+  virtuals: true,
+  transform: (doc, ret) => {
+    // CHANGE: Map MongoDB _id to GraphQL id field
+    ret.id = ret._id;
+    delete ret._id;
+    delete ret.__v;
+    
+    // CHANGE: Transform variants array to include id field
+    if (ret.variants && Array.isArray(ret.variants)) {
+      ret.variants = ret.variants.map(variant => {
+        const transformedVariant = { ...variant };
+        transformedVariant.id = transformedVariant._id;
+        delete transformedVariant._id;
+        return transformedVariant;
+      });
+    }
+    
+    return ret;
+  }
+});
+
+// CHANGE: Configure toObject similarly for consistency
+productSchema.set('toObject', {
+  virtuals: true,
+  transform: (doc, ret) => {
+    ret.id = ret._id;
+    delete ret._id;
+    delete ret.__v;
+    
+    if (ret.variants && Array.isArray(ret.variants)) {
+      ret.variants = ret.variants.map(variant => {
+        const transformedVariant = { ...variant };
+        transformedVariant.id = transformedVariant._id;
+        delete transformedVariant._id;
+        return transformedVariant;
+      });
+    }
+    
+    return ret;
+  }
 });
 
 // Virtual method to get effective description for a variant
