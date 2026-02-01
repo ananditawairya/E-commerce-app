@@ -16,9 +16,16 @@ const { v4: uuidv4 } = require('uuid');
 
 const app = express();
 app.use(cors());
+// CHANGE: Increase payload limits to match product-service
 app.use(express.json({
-  limit:'50mb',
-  parameterLimit:50000
+  limit: '50mb',
+  parameterLimit: 50000
+}));
+// CHANGE: Add URL-encoded parser with same limits
+app.use(express.urlencoded({
+  limit: '50mb',
+  parameterLimit: 50000,
+  extended: true
 }));
 
 // CHANGE: Add correlation ID middleware

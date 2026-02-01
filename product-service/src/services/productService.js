@@ -1,8 +1,10 @@
 // backend/product-service/src/services/productService.js
-// CHANGE: New service layer for product database operations
+// CHANGE: Integrated Kafka event publishing
 
 const Product = require('../models/Product');
 const { sanitizeProductInput } = require('../utils/inputSanitizer');
+// CHANGE: Import Kafka producer
+const kafkaProducer = require('../kafka/kafkaProducer');
 
 class ProductService {
   async getProducts({ search, category, limit = 20, offset = 0 }) {
@@ -45,7 +47,7 @@ class ProductService {
     return categories;
   }
 
-  async createProduct(sellerId, input) {
+  async createProduct(sellerId, input, correlationId) {
     // Sanitize input
     const sanitizedInput = sanitizeProductInput(input);
 
@@ -83,10 +85,23 @@ class ProductService {
     });
 
     await product.save();
+
+    // CHANGE: Publish ProductCreated event to Kafka (async, non-blocking)
+    setImmediate(async () => {
+      try {
+        await kafkaProducer.publishProductCreated(
+          product.toJSON(),
+          correlationId || `product-create-${Date.now()}`
+        );
+      } catch (error) {
+        console.error('Failed to publish product created event:', error);
+      }
+    });
+
     return product;
   }
 
-  async updateProduct(productId, sellerId, input) {
+  async updateProduct(productId, sellerId, input, correlationId) {
     const product = await Product.findOne({ _id: productId, sellerId });
     if (!product) {
       const error = new Error('Product not found or unauthorized');
@@ -116,6 +131,18 @@ class ProductService {
     Object.assign(product, sanitizedInput);
     await product.save();
 
+    // CHANGE: Publish ProductUpdated event to Kafka (async, non-blocking)
+    setImmediate(async () => {
+      try {
+        await kafkaProducer.publishProductUpdated(
+          product.toJSON(),
+          correlationId || `product-update-${Date.now()}`
+        );
+      } catch (error) {
+        console.error('Failed to publish product updated event:', error);
+      }
+    });
+
     return product;
   }
 
@@ -131,7 +158,7 @@ class ProductService {
     return true;
   }
 
-  async deductStock(productId, variantId, quantity) {
+  async deductStock(productId, variantId, quantity, orderId, correlationId) {
     const product = await Product.findById(productId);
     if (!product) {
       const error = new Error('Product not found');
@@ -171,6 +198,72 @@ class ProductService {
       error.code = 'STOCK_DEDUCTION_FAILED';
       throw error;
     }
+
+    // CHANGE: Publish StockDeducted event to Kafka (async, non-blocking)
+    setImmediate(async () => {
+      try {
+        await kafkaProducer.publishStockDeducted(
+          productId,
+          variantId,
+          quantity,
+          orderId,
+          correlationId || `stock-deduct-${Date.now()}`
+        );
+      } catch (error) {
+        console.error('Failed to publish stock deducted event:', error);
+      }
+    });
+
+    return true;
+  }
+
+  // CHANGE: Add restore stock method for order cancellations
+  async restoreStock(productId, variantId, quantity, orderId, correlationId) {
+    const product = await Product.findById(productId);
+    if (!product) {
+      const error = new Error('Product not found');
+      error.code = 'PRODUCT_NOT_FOUND';
+      throw error;
+    }
+
+    const variant = product.variants.find(v => v._id === variantId);
+    if (!variant) {
+      const error = new Error('Variant not found');
+      error.code = 'VARIANT_NOT_FOUND';
+      throw error;
+    }
+
+    // CHANGE: Atomic stock restoration
+    const updateResult = await Product.updateOne(
+      {
+        _id: productId,
+        'variants._id': variantId,
+      },
+      {
+        $inc: { 'variants.$.stock': quantity },
+      }
+    );
+
+    if (updateResult.modifiedCount === 0) {
+      const error = new Error('Stock restoration failed');
+      error.code = 'STOCK_RESTORATION_FAILED';
+      throw error;
+    }
+
+    // CHANGE: Publish StockRestored event to Kafka (async, non-blocking)
+    setImmediate(async () => {
+      try {
+        await kafkaProducer.publishStockRestored(
+          productId,
+          variantId,
+          quantity,
+          orderId,
+          correlationId || `stock-restore-${Date.now()}`
+        );
+      } catch (error) {
+        console.error('Failed to publish stock restored event:', error);
+      }
+    });
 
     return true;
   }

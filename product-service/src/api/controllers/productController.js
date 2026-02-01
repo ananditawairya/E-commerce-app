@@ -1,5 +1,5 @@
 // backend/product-service/src/api/controllers/productController.js
-// CHANGE: REST API controller for product operations
+// CHANGE: Pass correlation ID to service layer for Kafka events
 
 const productService = require('../../services/productService');
 
@@ -33,7 +33,6 @@ class ProductController {
     try {
       const { sellerId } = req.params;
       
-      // CHANGE: Audit log
       req.log.info({ sellerId }, 'Fetching seller products');
       
       const products = await productService.getProductsBySeller(sellerId);
@@ -56,12 +55,11 @@ class ProductController {
     try {
       const { sellerId, input } = req.body;
 
-      // CHANGE: Audit log
       req.log.info({ sellerId, productName: input.name }, 'Creating product');
 
-      const product = await productService.createProduct(sellerId, input);
+      // CHANGE: Pass correlation ID to service for Kafka event
+      const product = await productService.createProduct(sellerId, input, req.correlationId);
 
-      // CHANGE: Audit log success
       req.log.info({ productId: product._id, sellerId }, 'Product created successfully');
 
       res.status(201).json(product);
@@ -75,12 +73,11 @@ class ProductController {
       const { id } = req.params;
       const { sellerId, input } = req.body;
 
-      // CHANGE: Audit log
       req.log.info({ productId: id, sellerId }, 'Updating product');
 
-      const product = await productService.updateProduct(id, sellerId, input);
+      // CHANGE: Pass correlation ID to service for Kafka event
+      const product = await productService.updateProduct(id, sellerId, input, req.correlationId);
 
-      // CHANGE: Audit log success
       req.log.info({ productId: id, sellerId }, 'Product updated successfully');
 
       res.json(product);
@@ -94,12 +91,10 @@ class ProductController {
       const { id } = req.params;
       const { sellerId } = req.body;
 
-      // CHANGE: Audit log
       req.log.info({ productId: id, sellerId }, 'Deleting product');
 
       await productService.deleteProduct(id, sellerId);
 
-      // CHANGE: Audit log success
       req.log.info({ productId: id, sellerId }, 'Product deleted successfully');
 
       res.json({ success: true });
@@ -113,7 +108,6 @@ class ProductController {
       const { id } = req.params;
       const { variantId, quantity, orderId } = req.body;
 
-      // CHANGE: Audit log with order traceability
       req.log.info({
         productId: id,
         variantId,
@@ -121,9 +115,9 @@ class ProductController {
         orderId,
       }, 'Deducting stock');
 
-      await productService.deductStock(id, variantId, quantity);
+      // CHANGE: Pass correlation ID to service for Kafka event
+      await productService.deductStock(id, variantId, quantity, orderId, req.correlationId);
 
-      // CHANGE: Audit log success
       req.log.info({
         productId: id,
         variantId,
@@ -144,6 +138,34 @@ class ProductController {
 
       const stock = await productService.getProductStock(id, variantId);
       res.json(stock);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  // CHANGE: Add restore stock controller method for order cancellations
+  async restoreStock(req, res, next) {
+    try {
+      const { id } = req.params;
+      const { variantId, quantity, orderId } = req.body;
+
+      req.log.info({
+        productId: id,
+        variantId,
+        quantity,
+        orderId,
+      }, 'Restoring stock');
+
+      await productService.restoreStock(id, variantId, quantity, orderId, req.correlationId);
+
+      req.log.info({
+        productId: id,
+        variantId,
+        quantity,
+        orderId,
+      }, 'Stock restored successfully');
+
+      res.json({ success: true });
     } catch (error) {
       next(error);
     }

@@ -34,9 +34,21 @@ const verifyRefreshToken = (token) => {
   }
 };
 
+// CHANGE: Add wrapper function to generate both tokens at once
+const generateTokens = (payload) => {
+  const { userId, email, role } = payload;
+  
+  return {
+    accessToken: generateAccessToken(userId, role),
+    refreshToken: generateRefreshToken(userId),
+  };
+};
+
 module.exports = {
   generateAccessToken,
   generateRefreshToken,
   verifyAccessToken,
   verifyRefreshToken,
+  // CHANGE: Export the new generateTokens function
+  generateTokens,
 };

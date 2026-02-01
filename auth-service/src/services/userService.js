@@ -1,56 +1,65 @@
 // backend/auth-service/src/services/userService.js
-// CHANGE: New service layer to encapsulate all database operations
+// CHANGE: Integrated Kafka event publishing
 
 const User = require('../models/User');
-const {
-  generateAccessToken,
-  generateRefreshToken,
-  verifyAccessToken,
-  verifyRefreshToken,
-} = require('../utils/jwt');
+const { generateTokens, verifyAccessToken, verifyRefreshToken } = require('../utils/jwt');
+// CHANGE: Import Kafka producer
+const kafkaProducer = require('../kafka/kafkaProducer');
 
 class UserService {
   async createUser({ email, password, name, role }) {
-    // CHANGE: Removed redundant findOne check - rely on MongoDB unique index for atomicity
-    // Validate role
-    if (!['buyer', 'seller'].includes(role)) {
-      const error = new Error('Invalid role. Must be buyer or seller');
-      error.code = 'INVALID_ROLE';
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      const error = new Error('User already exists');
+      error.code = 'USER_EXISTS';
       throw error;
     }
 
-    // CHANGE: Use try-catch to handle duplicate key error from MongoDB
-    try {
-      // Create new user
-      const user = new User({ email, password, name, role });
-      await user.save();
+    const user = new User({ email, password, name, role });
+    await user.save();
 
-      // Generate tokens
-      const accessToken = generateAccessToken(user._id, user.role);
-      const refreshToken = generateRefreshToken(user._id);
+    const tokens = generateTokens({
+      userId: user._id.toString(),
+      email: user.email,
+      role: user.role,
+    });
 
-      // Save refresh token
-      user.refreshTokens.push({ token: refreshToken });
-      await user.save();
+    // CHANGE: Push object with token property instead of raw string
+    user.refreshTokens.push({ token: tokens.refreshToken });
+    await user.save();
 
-      return {
-        user: user.toJSON(),
-        accessToken,
-        refreshToken,
-      };
-    } catch (error) {
-      // CHANGE: Handle MongoDB duplicate key error (code 11000)
-      if (error.code === 11000) {
-        const duplicateError = new Error('Email already registered');
-        duplicateError.code = 'USER_EXISTS';
-        throw duplicateError;
+    // CHANGE: Publish UserRegistered event to Kafka (async, non-blocking)
+    setImmediate(async () => {
+      try {
+        await kafkaProducer.publishUserRegistered(
+          {
+            id: user._id.toString(),
+            email: user.email,
+            name: user.name,
+            role: user.role,
+            createdAt: user.createdAt,
+          },
+          `user-reg-${Date.now()}`
+        );
+      } catch (error) {
+        console.error('Failed to publish user registration event:', error);
       }
-      throw error;
-    }
+    });
+
+    return {
+      user: {
+        id: user._id.toString(),
+        email: user.email,
+        name: user.name,
+        role: user.role,
+        createdAt: user.createdAt,
+      },
+      accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
+    };
   }
 
   async authenticateUser({ email, password }) {
-    // Find user
     const user = await User.findOne({ email });
     if (!user) {
       const error = new Error('Invalid credentials');
@@ -58,7 +67,6 @@ class UserService {
       throw error;
     }
 
-    // Check password
     const isValidPassword = await user.comparePassword(password);
     if (!isValidPassword) {
       const error = new Error('Invalid credentials');
@@ -66,18 +74,25 @@ class UserService {
       throw error;
     }
 
-    // Generate tokens
-    const accessToken = generateAccessToken(user._id, user.role);
-    const refreshToken = generateRefreshToken(user._id);
+    const tokens = generateTokens({
+      userId: user._id.toString(),
+      email: user.email,
+      role: user.role,
+    });
 
-    // Save refresh token
-    user.refreshTokens.push({ token: refreshToken });
+    // CHANGE: Push object with token property instead of raw string
+    user.refreshTokens.push({ token: tokens.refreshToken });
     await user.save();
 
     return {
-      user: user.toJSON(),
-      accessToken,
-      refreshToken,
+      user: {
+        id: user._id.toString(),
+        email: user.email,
+        name: user.name,
+        role: user.role,
+      },
+      accessToken: tokens.accessToken,
+      refreshToken: tokens.refreshToken,
     };
   }
 
@@ -90,11 +105,7 @@ class UserService {
         valid: true,
       };
     } catch (error) {
-      return {
-        userId: null,
-        role: null,
-        valid: false,
-      };
+      return { valid: false };
     }
   }
 
@@ -105,35 +116,48 @@ class UserService {
       error.code = 'USER_NOT_FOUND';
       throw error;
     }
-    return user.toJSON();
+
+    return {
+      id: user._id.toString(),
+      email: user.email,
+      name: user.name,
+      role: user.role,
+      createdAt: user.createdAt,
+    };
   }
 
   async refreshUserToken(refreshToken) {
-    // Verify refresh token
-    const decoded = verifyRefreshToken(refreshToken);
+    try {
+      const decoded = verifyRefreshToken(refreshToken);
 
-    // Find user and check if refresh token exists
-    const user = await User.findById(decoded.userId);
-    if (!user) {
-      const error = new Error('User not found');
-      error.code = 'USER_NOT_FOUND';
-      throw error;
+      const user = await User.findById(decoded.userId);
+      // CHANGE: Check token property in refreshTokens array
+      if (!user || !user.refreshTokens.some(rt => rt.token === refreshToken)) {
+        const error = new Error('Invalid refresh token');
+        error.code = 'INVALID_REFRESH_TOKEN';
+        throw error;
+      }
+
+      const tokens = generateTokens({
+        userId: user._id.toString(),
+        email: user.email,
+        role: user.role,
+      });
+
+      // CHANGE: Filter by token property and push new object
+      user.refreshTokens = user.refreshTokens.filter(rt => rt.token !== refreshToken);
+      user.refreshTokens.push({ token: tokens.refreshToken });
+      await user.save();
+
+      return {
+        accessToken: tokens.accessToken,
+        refreshToken: tokens.refreshToken,
+      };
+    } catch (error) {
+      const err = new Error('Invalid refresh token');
+      err.code = 'INVALID_REFRESH_TOKEN';
+      throw err;
     }
-
-    const tokenExists = user.refreshTokens.some(
-      (rt) => rt.token === refreshToken
-    );
-
-    if (!tokenExists) {
-      const error = new Error('Invalid refresh token');
-      error.code = 'INVALID_REFRESH_TOKEN';
-      throw error;
-    }
-
-    // Generate new access token
-    const accessToken = generateAccessToken(user._id, user.role);
-
-    return { accessToken };
   }
 
   async logoutUser(refreshToken) {
@@ -142,9 +166,8 @@ class UserService {
       const user = await User.findById(decoded.userId);
 
       if (user) {
-        user.refreshTokens = user.refreshTokens.filter(
-          (rt) => rt.token !== refreshToken
-        );
+        // CHANGE: Filter by token property
+        user.refreshTokens = user.refreshTokens.filter(rt => rt.token !== refreshToken);
         await user.save();
       }
 

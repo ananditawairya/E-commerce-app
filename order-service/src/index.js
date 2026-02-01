@@ -1,5 +1,5 @@
 // backend/order-service/src/index.js
-// CHANGE: Modified to include REST API server
+// CHANGE: Added Kafka producer lifecycle management
 
 require('dotenv').config();
 const express = require('express');
@@ -9,24 +9,26 @@ const cors = require('cors');
 
 const typeDefs = require('./schema/orderSchema');
 const resolvers = require('./resolvers/orderResolvers');
-// CHANGE: Import REST API components
 const orderRoutes = require('./api/routes/orderRoutes');
 const logger = require('./api/middleware/logger');
 const errorHandler = require('./api/middleware/errorHandler');
+// CHANGE: Import Kafka producer
+const kafkaProducer = require('./kafka/kafkaProducer');
 
 const app = express();
 
 // Middleware
 app.use(cors());
-app.use(express.json());
-
-// CHANGE: Add logging middleware
+// CHANGE: Increase JSON payload limit to 50MB
+app.use(express.json({ limit: '50mb' }));
+// CHANGE: Increase URL-encoded payload limit to 50MB
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 app.use(logger);
 
-// CHANGE: Mount REST API routes
+// REST API routes
 app.use('/api', orderRoutes);
 
-// CHANGE: Add error handling middleware (must be after routes)
+// Error handling middleware
 app.use(errorHandler);
 
 // Apollo Server
@@ -55,9 +57,35 @@ const connectDB = async () => {
   }
 };
 
+// CHANGE: Graceful shutdown handler
+const gracefulShutdown = async (signal) => {
+  console.log(`\n${signal} received, shutting down gracefully...`);
+  
+  try {
+    await kafkaProducer.disconnect();
+    await mongoose.connection.close();
+    console.log('✅ Connections closed');
+    process.exit(0);
+  } catch (error) {
+    console.error('❌ Error during shutdown:', error);
+    process.exit(1);
+  }
+};
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
 // Start server
 const startServer = async () => {
   await connectDB();
+  
+  // CHANGE: Connect Kafka producer on startup
+  try {
+    await kafkaProducer.connect();
+  } catch (error) {
+    console.warn('⚠️  Kafka connection failed, continuing without events:', error.message);
+  }
+  
   await server.start();
   server.applyMiddleware({ app, path: '/graphql' });
 

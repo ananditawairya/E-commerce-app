@@ -1,5 +1,5 @@
 // backend/auth-service/src/index.js
-// CHANGE: Modified to include REST API server
+// CHANGE: Added Kafka producer lifecycle management
 
 require('dotenv').config();
 const express = require('express');
@@ -9,24 +9,26 @@ const cors = require('cors');
 
 const typeDefs = require('./schema/authSchema');
 const resolvers = require('./resolvers/authResolvers');
-// CHANGE: Import REST API components
 const userRoutes = require('./api/routes/userRoutes');
 const logger = require('./api/middleware/logger');
 const errorHandler = require('./api/middleware/errorHandler');
+// CHANGE: Import Kafka producer
+const kafkaProducer = require('./kafka/kafkaProducer');
 
 const app = express();
 
 // Middleware
 app.use(cors());
-app.use(express.json());
-
-// CHANGE: Add logging middleware
+// CHANGE: Increase JSON payload limit to 50MB
+app.use(express.json({ limit: '50mb' }));
+// CHANGE: Increase URL-encoded payload limit to 50MB
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 app.use(logger);
 
-// CHANGE: Mount REST API routes
+// REST API routes
 app.use('/api/users', userRoutes);
 
-// CHANGE: Add error handling middleware (must be after routes)
+// Error handling middleware
 app.use(errorHandler);
 
 // Apollo Server
@@ -34,8 +36,8 @@ const server = new ApolloServer({
   typeDefs,
   resolvers,
   introspection: true,
-  // CHANGE: Pass correlation ID to GraphQL context
   context: ({ req }) => ({
+    req,
     correlationId: req.correlationId,
     log: req.log,
   }),
@@ -44,7 +46,10 @@ const server = new ApolloServer({
 // Database connection
 const connectDB = async () => {
   try {
-    await mongoose.connect(process.env.MONGODB_URI);
+    await mongoose.connect(process.env.MONGODB_URI, {
+      useNewUrlParser: true,
+      useUnifiedTopology: true,
+    });
     console.log('✅ MongoDB connected - Auth Service');
   } catch (error) {
     console.error('❌ MongoDB connection error:', error.message);
@@ -52,9 +57,35 @@ const connectDB = async () => {
   }
 };
 
+// CHANGE: Graceful shutdown handler
+const gracefulShutdown = async (signal) => {
+  console.log(`\n${signal} received, shutting down gracefully...`);
+  
+  try {
+    await kafkaProducer.disconnect();
+    await mongoose.connection.close();
+    console.log('✅ Connections closed');
+    process.exit(0);
+  } catch (error) {
+    console.error('❌ Error during shutdown:', error);
+    process.exit(1);
+  }
+};
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
 // Start server
 const startServer = async () => {
   await connectDB();
+  
+  // CHANGE: Connect Kafka producer on startup
+  try {
+    await kafkaProducer.connect();
+  } catch (error) {
+    console.warn('⚠️  Kafka connection failed, continuing without events:', error.message);
+  }
+  
   await server.start();
   server.applyMiddleware({ app, path: '/graphql' });
 

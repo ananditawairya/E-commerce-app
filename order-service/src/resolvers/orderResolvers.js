@@ -339,33 +339,9 @@ const resolvers = {
         );
         const order = orderResponse.data;
 
-        // CHANGE: Deduct stock via REST API
-        context.log.info({ orderId: order.orderId }, 'Deducting stock for order items');
-        const stockDeductionPromises = cart.items.map(async (item) => {
-          if (!item.variantId) {
-            throw new Error(`Variant ID is required for stock deduction`);
-          }
-
-          try {
-            await deductStock(item.productId, item.variantId, item.quantity, order.orderId, context.correlationId);
-            context.log.info({
-              orderId: order.orderId,
-              productId: item.productId,
-              variantId: item.variantId,
-              quantity: item.quantity,
-            }, 'Stock deducted');
-          } catch (error) {
-            context.log.error({
-              orderId: order.orderId,
-              productId: item.productId,
-              error: error.message,
-            }, 'Failed to deduct stock');
-            throw error;
-          }
-        });
-
-        await Promise.all(stockDeductionPromises);
-        context.log.info({ orderId: order.orderId }, 'All stock deductions completed');
+        // CHANGE: Stock deduction happens asynchronously via Kafka OrderCreated event
+        // The Kafka consumer in product-service will handle actual stock deduction
+        context.log.info({ orderId: order.orderId }, 'Order created, stock deduction will be processed via Kafka');
 
         // CHANGE: Clear cart via REST API
         await axios.delete(
@@ -391,6 +367,27 @@ const resolvers = {
         const response = await axios.put(
           `${ORDERS_API_URL}/${orderId}/status`,
           { sellerId: user.userId, status },
+          {
+            headers: {
+              'X-Correlation-ID': context.correlationId,
+            },
+          }
+        );
+        return response.data;
+      } catch (error) {
+        throw new Error(error.response?.data?.message || error.message);
+      }
+    },
+
+    // CHANGE: Add missing cancelOrder mutation resolver
+    cancelOrder: async (_, { orderId }, context) => {
+      try {
+        const user = await requireSeller(context);
+
+        // CHANGE: Call REST API to cancel order
+        const response = await axios.put(
+          `${ORDERS_API_URL}/${orderId}/cancel`,
+          { sellerId: user.userId },
           {
             headers: {
               'X-Correlation-ID': context.correlationId,

@@ -1,5 +1,5 @@
 // backend/order-service/src/api/controllers/orderController.js
-// CHANGE: REST API controller for order operations
+// CHANGE: Pass correlation ID to service layer for Kafka events
 
 const orderService = require('../../services/orderService');
 
@@ -19,7 +19,6 @@ class OrderController {
       const { userId } = req.params;
       const { productId, variantId, quantity, price } = req.body;
 
-      // CHANGE: Audit log
       req.log.info({ userId, productId, variantId, quantity }, 'Adding item to cart');
 
       const cart = await orderService.addToCart(userId, {
@@ -29,7 +28,6 @@ class OrderController {
         price,
       });
 
-      // CHANGE: Audit log success
       req.log.info({ userId, productId, cartItemCount: cart.items.length }, 'Item added to cart');
 
       res.json(cart);
@@ -43,7 +41,6 @@ class OrderController {
       const { userId } = req.params;
       const { productId, variantId, quantity } = req.body;
 
-      // CHANGE: Audit log
       req.log.info({ userId, productId, variantId, quantity }, 'Updating cart item');
 
       const cart = await orderService.updateCartItem(userId, {
@@ -52,7 +49,6 @@ class OrderController {
         quantity,
       });
 
-      // CHANGE: Audit log success
       req.log.info({ userId, productId, cartItemCount: cart.items.length }, 'Cart item updated');
 
       res.json(cart);
@@ -66,7 +62,6 @@ class OrderController {
       const { userId } = req.params;
       const { productId, variantId } = req.body;
 
-      // CHANGE: Audit log
       req.log.info({ userId, productId, variantId }, 'Removing item from cart');
 
       const cart = await orderService.removeFromCart(userId, {
@@ -74,7 +69,6 @@ class OrderController {
         variantId,
       });
 
-      // CHANGE: Audit log success
       req.log.info({ userId, productId, cartItemCount: cart.items.length }, 'Item removed from cart');
 
       res.json(cart);
@@ -87,12 +81,10 @@ class OrderController {
     try {
       const { userId } = req.params;
 
-      // CHANGE: Audit log
       req.log.info({ userId }, 'Clearing cart');
 
       await orderService.clearCart(userId);
 
-      // CHANGE: Audit log success
       req.log.info({ userId }, 'Cart cleared');
 
       res.json({ success: true });
@@ -106,20 +98,19 @@ class OrderController {
       const { userId } = req.params;
       const { items, totalAmount, shippingAddress } = req.body;
 
-      // CHANGE: Audit log with order details
       req.log.info({
         userId,
         itemCount: items.length,
         totalAmount,
       }, 'Creating order');
 
-      const order = await orderService.createOrder(userId, {
-        items,
-        totalAmount,
-        shippingAddress,
-      });
+      // CHANGE: Pass correlation ID to service for Kafka event
+      const order = await orderService.createOrder(
+        userId,
+        { items, totalAmount, shippingAddress },
+        req.correlationId
+      );
 
-      // CHANGE: Audit log success
       req.log.info({
         userId,
         orderId: order.orderId,
@@ -136,7 +127,6 @@ class OrderController {
     try {
       const { buyerId } = req.params;
 
-      // CHANGE: Audit log
       req.log.info({ buyerId }, 'Fetching buyer orders');
 
       const orders = await orderService.getOrdersByBuyer(buyerId);
@@ -150,7 +140,6 @@ class OrderController {
     try {
       const { sellerId } = req.params;
 
-      // CHANGE: Audit log
       req.log.info({ sellerId }, 'Fetching seller orders');
 
       const orders = await orderService.getOrdersBySeller(sellerId);
@@ -175,13 +164,30 @@ class OrderController {
       const { id } = req.params;
       const { sellerId, status } = req.body;
 
-      // CHANGE: Audit log
       req.log.info({ orderId: id, sellerId, status }, 'Updating order status');
 
-      const order = await orderService.updateOrderStatus(id, sellerId, status);
+      // CHANGE: Pass correlation ID to service for Kafka event
+      const order = await orderService.updateOrderStatus(id, sellerId, status, req.correlationId);
 
-      // CHANGE: Audit log success
       req.log.info({ orderId: id, sellerId, status }, 'Order status updated');
+
+      res.json(order);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  // CHANGE: Add cancel order controller method
+  async cancelOrder(req, res, next) {
+    try {
+      const { id } = req.params;
+      const { sellerId } = req.body;
+
+      req.log.info({ orderId: id, sellerId }, 'Cancelling order');
+
+      const order = await orderService.cancelOrder(id, sellerId, req.correlationId);
+
+      req.log.info({ orderId: id, sellerId }, 'Order cancelled successfully');
 
       res.json(order);
     } catch (error) {

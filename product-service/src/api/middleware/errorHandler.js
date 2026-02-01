@@ -2,11 +2,26 @@
 // CHANGE: Centralized error handling for product service
 
 const errorHandler = (err, req, res, next) => {
-  req.log.error({
-    error: err.message,
-    stack: err.stack,
-    code: err.code,
-  }, 'Request error');
+  // CHANGE: Add null-safe check for req.log (GraphQL requests may not have logger attached)
+  if (req.log && typeof req.log.error === 'function') {
+    req.log.error({
+      error: err.message,
+      stack: err.stack,
+      code: err.code,
+    }, 'Request error');
+  } else {
+    // CHANGE: Fallback to console.error if req.log is unavailable
+    console.error(JSON.stringify({
+      level: 'error',
+      correlationId: req.correlationId || 'unknown',
+      timestamp: new Date().toISOString(),
+      service: 'product-service',
+      message: 'Request error',
+      error: err.message,
+      stack: err.stack,
+      code: err.code,
+    }));
+  }
 
   const statusCodeMap = {
     'PRODUCT_NOT_FOUND': 404,
@@ -24,7 +39,7 @@ const errorHandler = (err, req, res, next) => {
   const response = {
     code: err.code || 'INTERNAL_ERROR',
     message: err.message,
-    correlationId: req.correlationId,
+    correlationId: req.correlationId || 'unknown',
   };
 
   // CHANGE: Include additional error details for specific codes

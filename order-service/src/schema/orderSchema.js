@@ -78,6 +78,7 @@ const typeDefs = gql`
     clearCart: Boolean!
     checkout(shippingAddress: ShippingAddressInput!): Order!
     updateOrderStatus(orderId: ID!, status: String!): Order!
+    cancelOrder(orderId: ID!): Order!
   }
 `;
 

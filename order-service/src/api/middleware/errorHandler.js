@@ -15,6 +15,7 @@ const errorHandler = (err, req, res, next) => {
     'UNAUTHORIZED': 403,
     'CART_EMPTY': 400,
     'INSUFFICIENT_STOCK': 409,
+    'CANNOT_CANCEL_ORDER': 400,
   };
 
   const statusCode = statusCodeMap[err.code] || 500;

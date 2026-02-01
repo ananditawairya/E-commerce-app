@@ -19,5 +19,7 @@ router.get('/orders/buyer/:buyerId', orderController.getOrdersByBuyer);
 router.get('/orders/seller/:sellerId', orderController.getOrdersBySeller);
 router.get('/orders/:id', orderController.getOrder);
 router.put('/orders/:id/status', orderController.updateOrderStatus);
+// CHANGE: Add cancel order endpoint
+router.put('/orders/:id/cancel', orderController.cancelOrder);
 
 module.exports = router;

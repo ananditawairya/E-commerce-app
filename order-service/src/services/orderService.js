@@ -1,8 +1,10 @@
 // backend/order-service/src/services/orderService.js
-// CHANGE: New service layer for order database operations
+// CHANGE: Integrated Kafka event publishing
 
 const Cart = require('../models/Cart');
 const Order = require('../models/Order');
+// CHANGE: Import Kafka producer
+const kafkaProducer = require('../kafka/kafkaProducer');
 
 class OrderService {
   async getCart(userId) {
@@ -13,8 +15,7 @@ class OrderService {
       await cart.save();
     }
 
-    // CHANGE: Ensure toJSON is called to map _id to id
-    return cart.toJSON();
+    return cart;
   }
 
   async addToCart(userId, { productId, variantId, quantity, price }) {
@@ -36,8 +37,7 @@ class OrderService {
     }
 
     await cart.save();
-    // CHANGE: Ensure toJSON is called to map _id to id
-    return cart.toJSON();
+    return cart;
   }
 
   async updateCartItem(userId, { productId, variantId, quantity }) {
@@ -67,8 +67,7 @@ class OrderService {
     }
 
     await cart.save();
-    // CHANGE: Ensure toJSON is called to map _id to id
-    return cart.toJSON();
+    return cart;
   }
 
   async removeFromCart(userId, { productId, variantId }) {
@@ -86,8 +85,7 @@ class OrderService {
     );
 
     await cart.save();
-    // CHANGE: Ensure toJSON is called to map _id to id
-    return cart.toJSON();
+    return cart;
   }
 
   async clearCart(userId) {
@@ -98,7 +96,7 @@ class OrderService {
     return true;
   }
 
-  async createOrder(userId, { items, totalAmount, shippingAddress }) {
+  async createOrder(userId, { items, totalAmount, shippingAddress }, correlationId) {
     const order = new Order({
       orderId: `ORD-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
       buyerId: userId,
@@ -110,6 +108,20 @@ class OrderService {
     });
 
     await order.save();
+
+    // CHANGE: Publish OrderCreated event to Kafka
+    await kafkaProducer.publishOrderCreated(
+      {
+        orderId: order.orderId,
+        buyerId: order.buyerId,
+        items: order.items,
+        totalAmount: order.totalAmount,
+        status: order.status,
+        createdAt: order.createdAt,
+      },
+      correlationId
+    );
+
     return order;
   }
 
@@ -135,7 +147,7 @@ class OrderService {
     return order;
   }
 
-  async updateOrderStatus(orderId, sellerId, status) {
+  async updateOrderStatus(orderId, sellerId, status, correlationId) {
     const order = await Order.findById(orderId);
 
     if (!order) {
@@ -144,7 +156,6 @@ class OrderService {
       throw error;
     }
 
-    // Check if seller has items in this order
     const hasItems = order.items.some(item => item.sellerId === sellerId);
     if (!hasItems) {
       const error = new Error('Unauthorized to update this order');
@@ -154,6 +165,54 @@ class OrderService {
 
     order.status = status;
     await order.save();
+
+    // CHANGE: Publish OrderStatusUpdated event to Kafka (async, non-blocking)
+    setImmediate(async () => {
+      try {
+        await kafkaProducer.publishOrderStatusUpdated(order.orderId, status, correlationId);
+      } catch (error) {
+        console.error('Failed to publish order status update event:', error);
+      }
+    });
+
+    return order;
+  }
+
+  async cancelOrder(orderId, sellerId, correlationId) {
+    const order = await Order.findById(orderId);
+
+    if (!order) {
+      const error = new Error('Order not found');
+      error.code = 'ORDER_NOT_FOUND';
+      throw error;
+    }
+
+    const hasItems = order.items.some(item => item.sellerId === sellerId);
+    if (!hasItems) {
+      const error = new Error('Unauthorized to cancel this order');
+      error.code = 'UNAUTHORIZED';
+      throw error;
+    }
+
+    if (order.status === 'cancelled' || order.status === 'delivered') {
+      const error = new Error('Order cannot be cancelled');
+      error.code = 'CANNOT_CANCEL_ORDER';
+      throw error;
+    }
+
+    order.status = 'cancelled';
+    await order.save();
+
+    // CHANGE: Publish OrderCancelled event to Kafka for stock restoration
+    await kafkaProducer.publishOrderCancelled(
+      {
+        orderId: order.orderId,
+        buyerId: order.buyerId,
+        items: order.items,
+        totalAmount: order.totalAmount,
+      },
+      correlationId
+    );
 
     return order;
   }
