@@ -1,5 +1,5 @@
 // backend/order-service/src/index.js
-// CHANGE: Added Kafka producer lifecycle management
+// CHANGE: Ensure MongoDB connects before saga coordinator initialization
 
 require('dotenv').config();
 const express = require('express');
@@ -12,16 +12,14 @@ const resolvers = require('./resolvers/orderResolvers');
 const orderRoutes = require('./api/routes/orderRoutes');
 const logger = require('./api/middleware/logger');
 const errorHandler = require('./api/middleware/errorHandler');
-// CHANGE: Import Kafka producer
 const kafkaProducer = require('./kafka/kafkaProducer');
+const { initializeSagaCoordinator } = require('./services/orderService');
 
 const app = express();
 
 // Middleware
 app.use(cors());
-// CHANGE: Increase JSON payload limit to 50MB
 app.use(express.json({ limit: '50mb' }));
-// CHANGE: Increase URL-encoded payload limit to 50MB
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 app.use(logger);
 
@@ -43,21 +41,43 @@ const server = new ApolloServer({
   }),
 });
 
-// Database connection
+// CHANGE: Enhanced database connection with retry logic
 const connectDB = async () => {
-  try {
-    await mongoose.connect(process.env.MONGODB_URI, {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
-    });
-    console.log('✅ MongoDB connected - Order Service');
-  } catch (error) {
-    console.error('❌ MongoDB connection error:', error.message);
-    process.exit(1);
+  const maxRetries = 5;
+  let retryCount = 0;
+  
+  while (retryCount < maxRetries) {
+    try {
+      await mongoose.connect(process.env.MONGODB_URI, {
+        useNewUrlParser: true,
+        useUnifiedTopology: true,
+        // CHANGE: Increase timeouts for saga operations
+        serverSelectionTimeoutMS: 30000,
+        socketTimeoutMS: 45000,
+      });
+      
+      // CHANGE: Wait for connection to be ready
+      await mongoose.connection.asPromise();
+      
+      console.log('✅ MongoDB connected - Order Service');
+      return;
+    } catch (error) {
+      retryCount++;
+      console.error(`❌ MongoDB connection attempt ${retryCount}/${maxRetries} failed:`, error.message);
+      
+      if (retryCount >= maxRetries) {
+        console.error('❌ MongoDB connection failed after maximum retries');
+        process.exit(1);
+      }
+      
+      // CHANGE: Exponential backoff
+      const delay = Math.min(1000 * Math.pow(2, retryCount), 10000);
+      console.log(`⏳ Retrying in ${delay}ms...`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
   }
 };
 
-// CHANGE: Graceful shutdown handler
 const gracefulShutdown = async (signal) => {
   console.log(`\n${signal} received, shutting down gracefully...`);
   
@@ -77,9 +97,19 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 // Start server
 const startServer = async () => {
+  // CHANGE: Connect to MongoDB FIRST before any other initialization
   await connectDB();
   
-  // CHANGE: Connect Kafka producer on startup
+  // CHANGE: Initialize saga coordinator AFTER MongoDB is connected
+  try {
+    await initializeSagaCoordinator();
+    console.log('✅ Saga coordinator initialized');
+  } catch (error) {
+    console.error('❌ Saga coordinator initialization failed:', error.message);
+    process.exit(1);
+  }
+  
+  // CHANGE: Connect Kafka producer after saga coordinator
   try {
     await kafkaProducer.connect();
   } catch (error) {

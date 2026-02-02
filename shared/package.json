@@ -4,6 +4,7 @@
   "description": "Shared utilities for microservices",
   "main": "index.js",
   "dependencies": {
-    "kafkajs": "^2.2.4"
+    "kafkajs": "^2.2.4",
+    "mongoose": "^7.0.3"
   }
 }

@@ -3,15 +3,21 @@
 
 const express = require('express');
 const userController = require('../controllers/userController');
-
+const validate = require('../middleware/validate');
+const {
+  registerSchema,
+  loginSchema,
+  verifyTokenSchema, refreshTokenSchema
+} = require('../middleware/validationSchemas');
 const router = express.Router();
 
+
 // CHANGE: RESTful endpoints for user operations
-router.post('/register', userController.register);
-router.post('/login', userController.login);
-router.post('/verify-token', userController.verifyToken);
+router.post('/register',validate(registerSchema, 'body'), userController.register);
+router.post('/login',  validate(loginSchema, 'body'), userController.login);
+router.post('/verify-token', validate(verifyTokenSchema), userController.verifyToken);
 router.get('/me', userController.getMe);
-router.post('/refresh-token', userController.refreshToken);
+router.post('/refresh-token', validate(refreshTokenSchema), userController.refreshToken);
 router.post('/logout', userController.logout);
 
 module.exports = router;

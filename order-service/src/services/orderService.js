@@ -1,10 +1,33 @@
 // backend/order-service/src/services/orderService.js
-// CHANGE: Integrated Kafka event publishing
+// CHANGE: Pass mongoose instance to saga coordinator
 
 const Cart = require('../models/Cart');
 const Order = require('../models/Order');
-// CHANGE: Import Kafka producer
 const kafkaProducer = require('../kafka/kafkaProducer');
+const mongoose = require('mongoose');
+// CHANGE: Import Saga coordinator
+const SagaCoordinator = require('../../../shared/saga/SagaCoordinator');
+const orderCreationSaga = require('../saga/orderCreationSaga');
+
+// CHANGE: Initialize saga coordinator with mongoose instance
+let sagaCoordinator;
+
+// CHANGE: Connect saga coordinator on service startup
+const initializeSagaCoordinator = async () => {
+  try {
+    // CHANGE: Pass mongoose instance to coordinator
+    sagaCoordinator = new SagaCoordinator('order-service', mongoose);
+    
+    // CHANGE: Register order creation saga
+    sagaCoordinator.registerSaga('ORDER_CREATION', orderCreationSaga);
+    
+    await sagaCoordinator.connect();
+    console.log('✅ Saga coordinator connected');
+  } catch (error) {
+    console.error('❌ Saga coordinator initialization failed:', error.message);
+    throw error;
+  }
+};
 
 class OrderService {
   async getCart(userId) {
@@ -97,6 +120,12 @@ class OrderService {
   }
 
   async createOrder(userId, { items, totalAmount, shippingAddress }, correlationId) {
+    // CHANGE: Ensure saga coordinator is initialized
+    if (!sagaCoordinator) {
+      throw new Error('Saga coordinator not initialized');
+    }
+
+    // CHANGE: Create order record first
     const order = new Order({
       orderId: `ORD-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
       buyerId: userId,
@@ -109,20 +138,66 @@ class OrderService {
 
     await order.save();
 
-    // CHANGE: Publish OrderCreated event to Kafka
-    await kafkaProducer.publishOrderCreated(
-      {
-        orderId: order.orderId,
-        buyerId: order.buyerId,
-        items: order.items,
-        totalAmount: order.totalAmount,
-        status: order.status,
-        createdAt: order.createdAt,
-      },
-      correlationId
-    );
+    // CHANGE: Start saga for order creation
+    try {
+      const saga = await sagaCoordinator.startSaga(
+        'ORDER_CREATION',
+        {
+          orderId: order.orderId,
+          buyerId: order.buyerId,
+          items: order.items,
+          totalAmount: order.totalAmount,
+          shippingAddress: order.shippingAddress,
+        },
+        correlationId
+      );
+
+      // CHANGE: Execute saga steps
+      await this.executeSagaSteps(saga, correlationId);
+
+      // CHANGE: Update order status to confirmed if saga succeeds
+      order.status = 'confirmed';
+      await order.save();
+
+      console.log(`✅ Order created successfully via saga: ${order.orderId}`);
+    } catch (error) {
+      // CHANGE: If saga fails, update order status to cancelled
+      order.status = 'cancelled';
+      await order.save();
+
+      console.error(`❌ Order creation saga failed: ${order.orderId}`, error.message);
+      
+      const err = new Error(`Order creation failed: ${error.message}`);
+      err.code = 'ORDER_CREATION_FAILED';
+      throw err;
+    }
 
     return order;
+  }
+
+  // CHANGE: Execute saga steps sequentially
+  async executeSagaSteps(saga, correlationId) {
+    const definition = orderCreationSaga;
+
+    for (let i = 0; i < definition.steps.length; i++) {
+      const step = definition.steps[i];
+      
+      try {
+        console.log(`🔄 Executing saga step: ${step.name}`);
+        
+        const stepData = await step.execute(saga.payload, correlationId);
+        
+        await sagaCoordinator.completeStep(saga.sagaId, step.name, stepData, correlationId);
+        
+        console.log(`✅ Saga step completed: ${step.name}`);
+      } catch (error) {
+        console.error(`❌ Saga step failed: ${step.name}`, error.message);
+        
+        await sagaCoordinator.failStep(saga.sagaId, step.name, error, correlationId);
+        
+        throw error;
+      }
+    }
   }
 
   async getOrdersByBuyer(buyerId) {
@@ -166,7 +241,6 @@ class OrderService {
     order.status = status;
     await order.save();
 
-    // CHANGE: Publish OrderStatusUpdated event to Kafka (async, non-blocking)
     setImmediate(async () => {
       try {
         await kafkaProducer.publishOrderStatusUpdated(order.orderId, status, correlationId);
@@ -203,7 +277,6 @@ class OrderService {
     order.status = 'cancelled';
     await order.save();
 
-    // CHANGE: Publish OrderCancelled event to Kafka for stock restoration
     await kafkaProducer.publishOrderCancelled(
       {
         orderId: order.orderId,
@@ -219,3 +292,4 @@ class OrderService {
 }
 
 module.exports = new OrderService();
+module.exports.initializeSagaCoordinator = initializeSagaCoordinator;

@@ -14,7 +14,7 @@ const userSchema = new mongoose.Schema({
   password: {
     type: String,
     required: true,
-    minlength: 6,
+    minlength: 8,
   },
   role: {
     type: String,
@@ -24,6 +24,8 @@ const userSchema = new mongoose.Schema({
   name: {
     type: String,
     required: true,
+    minlength: 3,
+    maxlength: 30,
   },
   refreshTokens: [{
     token: String,
@@ -35,6 +37,9 @@ const userSchema = new mongoose.Schema({
 }, {
   timestamps: true,
 });
+
+// CHANGE: Create indexes on email and username for faster lookups
+userSchema.index({ email: 1 });
 
 // Hash password before saving
 userSchema.pre('save', async function(next) {

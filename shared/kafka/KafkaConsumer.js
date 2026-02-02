@@ -47,7 +47,7 @@ class KafkaConsumer {
     
     await this.consumer.subscribe({
       topics: topicsArray,
-      fromBeginning: options.fromBeginning || false,
+      fromBeginning: options.fromBeginning || true,
     });
 
     console.log(`📥 Subscribed to topics: ${topicsArray.join(', ')}`);
