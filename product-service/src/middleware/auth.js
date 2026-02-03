@@ -2,6 +2,7 @@
 // CHANGE: Ensure REST API communication only
 
 const axios = require('axios');
+const jwt = require('jsonwebtoken');
 
 // CHANGE: Use REST API URL exclusively
 const AUTH_API_URL = process.env.AUTH_API_URL || 'http://localhost:4001/api/users';
@@ -37,25 +38,36 @@ const verifyToken = async (token, correlationId) => {
 };
 
 const authenticate = async (context) => {
+  // CHANGE: Allow internal service-to-service authentication
+  const internalToken = context.req.headers['x-internal-gateway-token'];
+  if (internalToken) {
+    try {
+      jwt.verify(internalToken, process.env.INTERNAL_JWT_SECRET || 'internal-secret');
+      return { userId: 'system-seller', role: 'seller', email: 'system@ecom.internal' };
+    } catch (error) {
+      console.error('Internal token verification failed:', error.message);
+    }
+  }
+
   const authHeader = context.req.headers.authorization;
-  
+
   if (!authHeader) {
     throw new Error('No authorization header');
   }
 
   const token = authHeader.replace('Bearer ', '');
   const user = await verifyToken(token, context.correlationId);
-  
+
   return user;
 };
 
 const requireSeller = async (context) => {
   const user = await authenticate(context);
-  
+
   if (user.role !== 'seller') {
     throw new Error('Seller access required');
   }
-  
+
   return user;
 };
 

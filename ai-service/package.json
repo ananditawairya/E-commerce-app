@@ -1,0 +1,26 @@
+{
+  "name": "ai-service",
+  "version": "1.0.0",
+  "description": "AI Recommendations microservice for e-commerce platform",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js"
+  },
+  "dependencies": {
+    "apollo-server-express": "^3.12.0",
+    "axios": "^1.4.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.0.3",
+    "express": "^4.18.2",
+    "graphql": "^16.6.0",
+    "kafkajs": "^2.2.4",
+    "mongoose": "^7.0.3",
+    "@google/generative-ai": "^0.21.0",
+    "jsonwebtoken": "^9.0.0",
+    "uuid": "^9.0.1"
+  },
+  "devDependencies": {
+    "nodemon": "^2.0.22"
+  }
+}
