@@ -50,6 +50,23 @@ const deductStock = async (productId, variantId, quantity, orderId, correlationI
   }
 };
 
+const getProductDetails = async (productId, correlationId) => {
+  try {
+    const response = await axios.get(
+      `${PRODUCT_API_URL}/${productId}`,
+      {
+        headers: {
+          'X-Correlation-ID': correlationId,
+        },
+        timeout: 5000,
+      }
+    );
+    return response.data;
+  } catch (error) {
+    throw new Error(`Failed to fetch product details: ${error.response?.data?.message || error.message}`);
+  }
+};
+
 const resolvers = {
   Cart: {
     totalAmount: (cart) => {
@@ -148,9 +165,23 @@ const resolvers = {
   },
 
   Mutation: {
-    addToCart: async (_, { productId, variantId, quantity, price }, context) => {
+    addToCart: async (_, { productId,productName, variantId,variantName, quantity, price }, context) => {
       try {
         const user = await requireBuyer(context);
+        let finalProductName = productName;
+        let finalVariantName = variantName;
+        if (!productName || (variantId && !variantName)) {
+        const product = await getProductDetails(productId, context.correlationId);
+        finalProductName = productName || product.name;
+         if (variantId && !variantName) {
+          const variant = product.variants.find(v => v.id === variantId);
+          if (!variant) {
+            throw new Error('Variant not found');
+          }
+          finalVariantName = variant.name;
+        }
+      }
+
 
         // CHANGE: Validate stock availability via REST API
         const stockInfo = await getProductStock(productId, variantId, context.correlationId);
@@ -185,7 +216,14 @@ const resolvers = {
         // CHANGE: Call REST API to add to cart
         const response = await axios.post(
           `${CART_API_URL}/${user.userId}/items`,
-          { productId, variantId, quantity, price },
+           { 
+            productId, 
+            productName: finalProductName, 
+            variantId, 
+            variantName: finalVariantName, 
+            quantity, 
+            price 
+          },
           {
             headers: {
               'X-Correlation-ID': context.correlationId,
@@ -269,95 +307,100 @@ const resolvers = {
       }
     },
 
-    checkout: async (_, { shippingAddress }, context) => {
-      try {
-        const user = await requireBuyer(context);
+  checkout: async (_, { shippingAddress }, context) => {
+  try {
+    const user = await requireBuyer(context);
 
-        // CHANGE: Get cart via REST API
-        const cartResponse = await axios.get(
-          `${CART_API_URL}/${user.userId}`,
-          {
-            headers: {
-              'X-Correlation-ID': context.correlationId,
-            },
-          }
-        );
-        const cart = cartResponse.data;
-
-        if (!cart || cart.items.length === 0) {
-          throw new Error('Cart is empty');
-        }
-
-        // CHANGE: Validate stock availability for all items via REST API
-        const stockValidationPromises = cart.items.map(async (item) => {
-          const stockInfo = await getProductStock(item.productId, item.variantId, context.correlationId);
-
-          if (item.quantity > stockInfo.stock) {
-            throw new Error(
-              `Insufficient stock for ${stockInfo.productName}${item.variantId ? ` (${stockInfo.variantName})` : ''}. ` +
-              `Available: ${stockInfo.stock}, Requested: ${item.quantity}`
-            );
-          }
-
-          return stockInfo;
-        });
-
-        const productDetailsArray = await Promise.all(stockValidationPromises);
-
-        // Prepare order items
-        const orderItems = cart.items.map((item, index) => {
-          const stockInfo = productDetailsArray[index];
-          return {
-            productId: item.productId,
-            productName: stockInfo.productName,
-            variantId: item.variantId,
-            variantName: item.variantId ? stockInfo.variantName : null,
-            quantity: item.quantity,
-            price: item.price,
-            sellerId: stockInfo.sellerId,
-          };
-        });
-
-        const totalAmount = orderItems.reduce(
-          (total, item) => total + (item.price * item.quantity),
-          0
-        );
-
-        // CHANGE: Create order via REST API
-        const orderResponse = await axios.post(
-          `${ORDERS_API_URL}/${user.userId}`,
-          {
-            items: orderItems,
-            totalAmount,
-            shippingAddress,
-          },
-          {
-            headers: {
-              'X-Correlation-ID': context.correlationId,
-            },
-          }
-        );
-        const order = orderResponse.data;
-
-        // CHANGE: Stock deduction happens asynchronously via Kafka OrderCreated event
-        // The Kafka consumer in product-service will handle actual stock deduction
-        context.log.info({ orderId: order.orderId }, 'Order created, stock deduction will be processed via Kafka');
-
-        // CHANGE: Clear cart via REST API
-        await axios.delete(
-          `${CART_API_URL}/${user.userId}`,
-          {
-            headers: {
-              'X-Correlation-ID': context.correlationId,
-            },
-          }
-        );
-
-        return order;
-      } catch (error) {
-        throw new Error(error.response?.data?.message || error.message);
+    // CHANGE: Get cart via REST API
+    const cartResponse = await axios.get(
+      `${CART_API_URL}/${user.userId}`,
+      {
+        headers: {
+          'X-Correlation-ID': context.correlationId,
+        },
       }
-    },
+    );
+    const cart = cartResponse.data;
+
+    if (!cart || cart.items.length === 0) {
+      throw new Error('Cart is empty');
+    }
+
+    // CHANGE: Validate stock availability for all items via REST API
+    const stockValidationPromises = cart.items.map(async (item) => {
+      const stockInfo = await getProductStock(item.productId, item.variantId, context.correlationId);
+
+      if (item.quantity > stockInfo.stock) {
+        throw new Error(
+          `Insufficient stock for ${stockInfo.productName}${item.variantId ? ` (${stockInfo.variantName})` : ''}. ` +
+          `Available: ${stockInfo.stock}, Requested: ${item.quantity}`
+        );
+      }
+
+      return {
+        stockInfo,
+        cartItem: item,
+      };
+    });
+
+    const validationResults = await Promise.all(stockValidationPromises);
+
+    // Prepare order items
+    const orderItems = validationResults.map(({ stockInfo, cartItem }) => {
+      return {
+        productId: cartItem.productId,
+        productName: stockInfo.productName,
+        variantId: cartItem.variantId,
+        variantName: cartItem.variantId ? stockInfo.variantName : null,
+        quantity: cartItem.quantity,
+        price: cartItem.price,
+        sellerId: stockInfo.sellerId,
+      };
+    });
+
+    const totalAmount = orderItems.reduce(
+      (total, item) => total + (item.price * item.quantity),
+      0
+    );
+
+    // CHANGE: Create orders via REST API (returns array of orders)
+    const orderResponse = await axios.post(
+      `${ORDERS_API_URL}/${user.userId}`,
+      {
+        items: orderItems,
+        totalAmount,
+        shippingAddress,
+      },
+      {
+        headers: {
+          'X-Correlation-ID': context.correlationId,
+        },
+      }
+    );
+    const orders = orderResponse.data;
+
+    context.log.info({ 
+      orderCount: orders.length,
+      orderIds: orders.map(o => o.orderId) 
+    }, 'Orders created, stock deduction will be processed via Kafka');
+
+    // CHANGE: Clear cart via REST API
+    await axios.delete(
+      `${CART_API_URL}/${user.userId}`,
+      {
+        headers: {
+          'X-Correlation-ID': context.correlationId,
+        },
+      }
+    );
+
+    // CHANGE: Return first order for backward compatibility (mobile expects single order)
+    // In future, update mobile to handle multiple orders
+    return orders[0];
+  } catch (error) {
+    throw new Error(error.response?.data?.message || error.message);
+  }
+},
 
     updateOrderStatus: async (_, { orderId, status }, context) => {
       try {

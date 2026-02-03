@@ -6,6 +6,7 @@ const KafkaClient = require('./KafkaClient');
 class KafkaConsumer {
   constructor(clientId, groupId) {
     this.client = new KafkaClient(clientId);
+    this.groupId = groupId;
     this.consumer = this.client.createConsumer(groupId);
     this.isConnected = false;
     this.handlers = new Map(); // topic -> handler function
@@ -17,7 +18,7 @@ class KafkaConsumer {
 
     await this.consumer.connect();
     this.isConnected = true;
-    console.log(`✅ Kafka consumer connected - ${this.client.clientId} (${this.consumer.groupId})`);
+    console.log(`✅ Kafka consumer connected - ${this.client.clientId} (${this.groupId})`);
   }
 
   async disconnect() {

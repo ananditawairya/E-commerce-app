@@ -41,7 +41,7 @@ class OrderService {
     return cart;
   }
 
-  async addToCart(userId, { productId, variantId, quantity, price }) {
+  async addToCart(userId, { productId, productName, variantId, variantName, quantity, price }) {
     let cart = await Cart.findOne({ userId });
 
     if (!cart) {
@@ -55,8 +55,19 @@ class OrderService {
 
     if (existingItemIndex > -1) {
       cart.items[existingItemIndex].quantity += quantity;
+      cart.items[existingItemIndex].productName = productName;
+      if (variantName) {
+        cart.items[existingItemIndex].variantName = variantName;
+      }
     } else {
-      cart.items.push({ productId, variantId, quantity, price });
+      cart.items.push({ 
+        productId, 
+        productName, 
+        variantId, 
+        variantName, 
+        quantity, 
+        price 
+      });
     }
 
     await cart.save();
@@ -119,18 +130,39 @@ class OrderService {
     return true;
   }
 
-  async createOrder(userId, { items, totalAmount, shippingAddress }, correlationId) {
-    // CHANGE: Ensure saga coordinator is initialized
-    if (!sagaCoordinator) {
-      throw new Error('Saga coordinator not initialized');
-    }
+async createOrder(userId, { items, totalAmount, shippingAddress }, correlationId) {
+  // CHANGE: Ensure saga coordinator is initialized
+  if (!sagaCoordinator) {
+    throw new Error('Saga coordinator not initialized');
+  }
 
-    // CHANGE: Create order record first
+  // CHANGE: Group items by seller to create separate orders
+  const itemsBySeller = items.reduce((acc, item) => {
+    if (!acc[item.sellerId]) {
+      acc[item.sellerId] = [];
+    }
+    acc[item.sellerId].push(item);
+    return acc;
+  }, {});
+
+  const sellerIds = Object.keys(itemsBySeller);
+  
+  // CHANGE: Create separate order for each seller
+  const createdOrders = [];
+  
+  for (const sellerId of sellerIds) {
+    const sellerItems = itemsBySeller[sellerId];
+    const sellerTotal = sellerItems.reduce(
+      (sum, item) => sum + (item.price * item.quantity),
+      0
+    );
+
+    // CHANGE: Create individual order per seller
     const order = new Order({
       orderId: `ORD-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
       buyerId: userId,
-      items,
-      totalAmount,
+      items: sellerItems,
+      totalAmount: sellerTotal,
       shippingAddress,
       status: 'pending',
       paymentMethod: 'mock',
@@ -138,7 +170,7 @@ class OrderService {
 
     await order.save();
 
-    // CHANGE: Start saga for order creation
+    // CHANGE: Start saga for each seller's order
     try {
       const saga = await sagaCoordinator.startSaga(
         'ORDER_CREATION',
@@ -149,17 +181,30 @@ class OrderService {
           totalAmount: order.totalAmount,
           shippingAddress: order.shippingAddress,
         },
-        correlationId
+        `${correlationId}-${sellerId}`
       );
 
       // CHANGE: Execute saga steps
-      await this.executeSagaSteps(saga, correlationId);
+      await this.executeSagaSteps(saga, `${correlationId}-${sellerId}`);
 
       // CHANGE: Update order status to confirmed if saga succeeds
       order.status = 'confirmed';
       await order.save();
 
-      console.log(`✅ Order created successfully via saga: ${order.orderId}`);
+      await kafkaProducer.publishOrderCreated(
+        {
+          orderId: order.orderId,
+          buyerId: order.buyerId,
+          items: order.items,
+          totalAmount: order.totalAmount,
+          createdAt: order.createdAt,
+        },
+        `${correlationId}-${sellerId}`
+      );
+
+      createdOrders.push(order);
+
+      console.log(`✅ Order created successfully via saga: ${order.orderId} for seller: ${sellerId}`);
     } catch (error) {
       // CHANGE: If saga fails, update order status to cancelled
       order.status = 'cancelled';
@@ -167,13 +212,14 @@ class OrderService {
 
       console.error(`❌ Order creation saga failed: ${order.orderId}`, error.message);
       
-      const err = new Error(`Order creation failed: ${error.message}`);
-      err.code = 'ORDER_CREATION_FAILED';
-      throw err;
+      // CHANGE: Continue creating orders for other sellers even if one fails
+      createdOrders.push(order);
     }
-
-    return order;
   }
+
+  // CHANGE: Return array of orders instead of single order
+  return createdOrders;
+}
 
   // CHANGE: Execute saga steps sequentially
   async executeSagaSteps(saga, correlationId) {

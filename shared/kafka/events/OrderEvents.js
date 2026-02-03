@@ -14,7 +14,9 @@ const createOrderCreatedEvent = (order) => ({
     buyerId: order.buyerId,
     items: order.items.map(item => ({
       productId: item.productId,
+      productName: item.productName,
       variantId: item.variantId,
+      variantName: item.variantName,
       quantity: item.quantity,
       price: item.price,
       sellerId: item.sellerId,
@@ -42,7 +44,9 @@ const createOrderCancelledEvent = (order) => ({
     buyerId: order.buyerId,
     items: order.items.map(item => ({
       productId: item.productId,
+      productName: item.productName, 
       variantId: item.variantId,
+      variantName: item.variantName,
       quantity: item.quantity,
       price: item.price,
       sellerId: item.sellerId,

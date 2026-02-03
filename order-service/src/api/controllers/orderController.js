@@ -17,13 +17,15 @@ class OrderController {
   async addToCart(req, res, next) {
     try {
       const { userId } = req.params;
-      const { productId, variantId, quantity, price } = req.body;
+      const { productId, productName, variantId, variantName, quantity, price } = req.body;
 
       req.log.info({ userId, productId, variantId, quantity }, 'Adding item to cart');
 
-      const cart = await orderService.addToCart(userId, {
+       const cart = await orderService.addToCart(userId, {
         productId,
+        productName,
         variantId,
+        variantName,
         quantity,
         price,
       });
@@ -93,35 +95,37 @@ class OrderController {
     }
   }
 
-  async createOrder(req, res, next) {
-    try {
-      const { userId } = req.params;
-      const { items, totalAmount, shippingAddress } = req.body;
+ async createOrder(req, res, next) {
+  try {
+    const { userId } = req.params;
+    const { items, totalAmount, shippingAddress } = req.body;
 
-      req.log.info({
-        userId,
-        itemCount: items.length,
-        totalAmount,
-      }, 'Creating order');
+    req.log.info({
+      userId,
+      itemCount: items.length,
+      totalAmount,
+    }, 'Creating order');
 
-      // CHANGE: Pass correlation ID to service for Kafka event
-      const order = await orderService.createOrder(
-        userId,
-        { items, totalAmount, shippingAddress },
-        req.correlationId
-      );
+    // CHANGE: Pass correlation ID to service for Kafka event (returns array)
+    const orders = await orderService.createOrder(
+      userId,
+      { items, totalAmount, shippingAddress },
+      req.correlationId
+    );
 
-      req.log.info({
-        userId,
-        orderId: order.orderId,
-        totalAmount,
-      }, 'Order created successfully');
+    req.log.info({
+      userId,
+      orderCount: orders.length,
+      orderIds: orders.map(o => o.orderId),
+      totalAmount,
+    }, 'Orders created successfully');
 
-      res.status(201).json(order);
-    } catch (error) {
-      next(error);
-    }
+    // CHANGE: Return array of orders
+    res.status(201).json(orders);
+  } catch (error) {
+    next(error);
   }
+}
 
   async getOrdersByBuyer(req, res, next) {
     try {

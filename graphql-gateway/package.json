@@ -1,25 +1,28 @@
 {
   "name": "graphql-gateway",
   "version": "1.0.0",
-  "description": "Apollo GraphQL Gateway with Schema Stitching",
+  "description": "Enhanced GraphQL Gateway with Security Features",
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js"
   },
   "dependencies": {
-    "@graphql-tools/schema": "^9.0.19",
-    "@graphql-tools/stitch": "^8.7.50",
-    "@graphql-tools/utils": "^9.2.1",
-    "@graphql-tools/wrap": "^9.4.2",
     "apollo-server-express": "^3.12.0",
-    "cors": "^2.8.5",
-    "dotenv": "^16.0.3",
+    "@graphql-tools/schema": "^9.0.19",
+    "@graphql-tools/stitch": "^8.7.49",
+    "@graphql-tools/wrap": "^9.4.2",
+    "@graphql-tools/utils": "^9.2.1",
     "express": "^4.18.2",
     "graphql": "^16.6.0",
-    "kafkajs": "^2.2.4",
-    "node-fetch": "^2.6.12",
-    "uuid": "^9.0.1"
+    "node-fetch": "^2.6.9",
+    "cors": "^2.8.5",
+    "express-rate-limit": "^6.7.0",
+    "helmet": "^6.1.5",
+    "jsonwebtoken": "^9.0.0",
+    "opossum": "^6.3.0",
+    "uuid": "^9.0.0",
+    "dotenv": "^16.0.3"
   },
   "devDependencies": {
     "nodemon": "^2.0.22"

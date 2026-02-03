@@ -1,14 +1,14 @@
 // backend/product-service/src/middleware/auth.js
-// CHANGE: Removed legacy GraphQL-based token verification, now uses REST API exclusively
+// CHANGE: Ensure REST API communication only
 
 const axios = require('axios');
 
-// CHANGE: Use REST API URL from environment (no fallback to GraphQL)
+// CHANGE: Use REST API URL exclusively
 const AUTH_API_URL = process.env.AUTH_API_URL || 'http://localhost:4001/api/users';
 
 const verifyToken = async (token, correlationId) => {
   try {
-    // CHANGE: Direct REST API call - no legacy GraphQL query construction
+    // CHANGE: Direct REST API call only
     const response = await axios.post(
       `${AUTH_API_URL}/verify-token`,
       { token },
@@ -16,7 +16,6 @@ const verifyToken = async (token, correlationId) => {
         headers: {
           'X-Correlation-ID': correlationId,
         },
-        // CHANGE: Add timeout to prevent hanging requests
         timeout: 5000,
       }
     );
@@ -27,7 +26,6 @@ const verifyToken = async (token, correlationId) => {
 
     return response.data;
   } catch (error) {
-    // CHANGE: Improved error handling with specific error codes
     if (error.code === 'ECONNREFUSED') {
       throw new Error('Auth service unavailable');
     }

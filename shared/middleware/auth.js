@@ -1,5 +1,5 @@
-// backend/order-service/src/middleware/auth.js
-// CHANGE: Ensure REST API communication only
+// backend/shared/middleware/auth.js
+// CHANGE: Shared authentication middleware for consistent token verification
 
 const axios = require('axios');
 
@@ -21,27 +21,11 @@ const verifyToken = async (token, correlationId) => {
     );
 
     if (!response.data.valid) {
-      console.error('❌ Token verification returned invalid:', {
-        correlationId,
-        responseData: response.data
-      });
       throw new Error('Invalid token');
     }
 
-     console.log('✅ Token verified successfully:', {
-      userId: response.data.userId,
-      role: response.data.role,
-      correlationId
-    });
-
     return response.data;
   } catch (error) {
-    console.error('❌ Token verification error:', {
-      message: error.message,
-      code: error.code,
-      status: error.response?.status,
-      correlationId
-    });
     if (error.code === 'ECONNREFUSED') {
       throw new Error('Auth service unavailable');
     }
@@ -56,17 +40,16 @@ const authenticate = async (context) => {
   const authHeader = context.req.headers.authorization;
   
   if (!authHeader) {
-    console.error('❌ No authorization header provided');
     throw new Error('No authorization header');
   }
 
   const token = authHeader.replace('Bearer ', '');
-
-    // CHANGE: Add token format validation
+  
+  // CHANGE: Add token format validation
   if (!token || token.length < 20) {
-    console.error('❌ Invalid token format:', { tokenLength: token?.length });
     throw new Error('Invalid token format');
   }
+  
   const user = await verifyToken(token, context.correlationId);
   
   return user;
@@ -76,7 +59,6 @@ const requireBuyer = async (context) => {
   const user = await authenticate(context);
   
   if (user.role !== 'buyer') {
-    console.error('❌ Buyer access required but got role:', user.role);
     throw new Error('Buyer access required');
   }
   
@@ -87,7 +69,6 @@ const requireSeller = async (context) => {
   const user = await authenticate(context);
   
   if (user.role !== 'seller') {
-    console.error('❌ Seller access required but got role:', user.role);
     throw new Error('Seller access required');
   }
   

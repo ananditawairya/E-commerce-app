@@ -1,10 +1,7 @@
-// backend/product-service/src/services/productService.js
-// CHANGE: Integrated Kafka event publishing
-
 const Product = require('../models/Product');
 const { sanitizeProductInput } = require('../utils/inputSanitizer');
-// CHANGE: Import Kafka producer
 const kafkaProducer = require('../kafka/kafkaProducer');
+const { v4: uuidv4 } = require('uuid');
 
 class ProductService {
   async getProducts({ search, category, limit = 20, offset = 0 }) {
@@ -48,10 +45,8 @@ class ProductService {
   }
 
   async createProduct(sellerId, input, correlationId) {
-    // Sanitize input
     const sanitizedInput = sanitizeProductInput(input);
 
-    // Validate required fields
     if (!sanitizedInput.name || !sanitizedInput.description || !sanitizedInput.category) {
       const error = new Error('Missing required fields: name, description, and category are required');
       error.code = 'MISSING_FIELDS';
@@ -64,7 +59,6 @@ class ProductService {
       throw error;
     }
 
-    // Validate variants
     if (!sanitizedInput.variants || sanitizedInput.variants.length === 0) {
       const error = new Error('At least one product variant is required');
       error.code = 'MISSING_VARIANTS';
@@ -86,7 +80,6 @@ class ProductService {
 
     await product.save();
 
-    // CHANGE: Publish ProductCreated event to Kafka (async, non-blocking)
     setImmediate(async () => {
       try {
         await kafkaProducer.publishProductCreated(
@@ -111,7 +104,6 @@ class ProductService {
 
     const sanitizedInput = sanitizeProductInput(input);
 
-    // Validate variants if being updated
     if (sanitizedInput.variants !== undefined) {
       if (!sanitizedInput.variants || sanitizedInput.variants.length === 0) {
         const error = new Error('At least one product variant is required');
@@ -131,7 +123,6 @@ class ProductService {
     Object.assign(product, sanitizedInput);
     await product.save();
 
-    // CHANGE: Publish ProductUpdated event to Kafka (async, non-blocking)
     setImmediate(async () => {
       try {
         await kafkaProducer.publishProductUpdated(
@@ -158,6 +149,169 @@ class ProductService {
     return true;
   }
 
+  async reserveStock(productId, variantId, quantity, orderId, reservationTimeoutMs = 300000, correlationId) {
+    const reservationId = uuidv4();
+    const expiresAt = new Date(Date.now() + reservationTimeoutMs);
+
+    // CHANGE: Simplified atomic operation using only stock field
+    const updateResult = await Product.updateOne(
+      {
+        _id: productId,
+        'variants._id': variantId,
+        'variants.stock': { $gte: quantity },
+      },
+      {
+        $inc: { 'variants.$[variant].stock': -quantity },
+        $push: {
+          'variants.$[variant].reservations': {
+            reservationId,
+            orderId,
+            quantity,
+            expiresAt,
+            status: 'active',
+          }
+        }
+      },
+      {
+        arrayFilters: [{ 'variant._id': variantId }],
+      }
+    );
+
+    if (updateResult.modifiedCount === 0) {
+      const error = new Error('Insufficient stock for reservation');
+      error.code = 'INSUFFICIENT_STOCK';
+      throw error;
+    }
+
+    console.log(`✅ Stock reserved: ${quantity} units for order ${orderId} (reservation: ${reservationId})`);
+
+    return {
+      reservationId,
+      productId,
+      variantId,
+      quantity,
+      expiresAt,
+      orderId,
+    };
+  }
+
+  async confirmReservation(productId, variantId, reservationId, orderId, correlationId) {
+    const product = await Product.findById(productId);
+    if (!product) {
+      const error = new Error('Product not found');
+      error.code = 'PRODUCT_NOT_FOUND';
+      throw error;
+    }
+
+    const variant = product.variants.find(v => v._id === variantId);
+    if (!variant) {
+      const error = new Error('Variant not found');
+      error.code = 'VARIANT_NOT_FOUND';
+      throw error;
+    }
+
+    const reservation = variant.reservations.find(r => r.reservationId === reservationId);
+    if (!reservation || reservation.status !== 'active') {
+      const error = new Error('Reservation not found or already processed');
+      error.code = 'RESERVATION_NOT_FOUND';
+      throw error;
+    }
+
+    // CHANGE: Mark reservation as confirmed without additional stock changes
+    const updateResult = await Product.updateOne(
+      {
+        _id: productId,
+        'variants._id': variantId,
+        'variants.reservations.reservationId': reservationId,
+        'variants.reservations.status': 'active',
+      },
+      {
+        $set: {
+          'variants.$[variant].reservations.$[reservation].status': 'confirmed',
+        }
+      },
+      {
+        arrayFilters: [
+          { 'variant._id': variantId },
+          { 'reservation.reservationId': reservationId }
+        ],
+      }
+    );
+
+    if (updateResult.modifiedCount === 0) {
+      const error = new Error('Failed to confirm reservation');
+      error.code = 'RESERVATION_CONFIRMATION_FAILED';
+      throw error;
+    }
+
+    setImmediate(async () => {
+      try {
+        await kafkaProducer.publishStockDeducted(
+          productId,
+          variantId,
+          reservation.quantity,
+          orderId,
+          correlationId || `stock-confirm-${Date.now()}`
+        );
+      } catch (error) {
+        console.error('Failed to publish stock deducted event:', error);
+      }
+    });
+
+    console.log(`✅ Reservation confirmed: ${reservationId} - ${reservation.quantity} units deducted`);
+    return true;
+  }
+
+  async releaseReservation(productId, variantId, reservationId, correlationId) {
+    const product = await Product.findById(productId);
+    if (!product) {
+      console.warn(`⚠️ Product ${productId} not found for reservation release`);
+      return false;
+    }
+
+    const variant = product.variants.find(v => v._id === variantId);
+    if (!variant) {
+      console.warn(`⚠️ Variant ${variantId} not found for reservation release`);
+      return false;
+    }
+
+    const reservation = variant.reservations.find(r => r.reservationId === reservationId);
+    if (!reservation || reservation.status !== 'active') {
+      console.warn(`⚠️ Reservation ${reservationId} not found or already processed`);
+      return false;
+    }
+
+    // CHANGE: Restore stock and mark reservation as released
+    const updateResult = await Product.updateOne(
+      {
+        _id: productId,
+        'variants._id': variantId,
+        'variants.reservations.reservationId': reservationId,
+        'variants.reservations.status': 'active',
+      },
+      {
+        $inc: { 'variants.$[variant].stock': reservation.quantity },
+        $set: {
+          'variants.$[variant].reservations.$[reservation].status': 'released',
+        }
+      },
+      {
+        arrayFilters: [
+          { 'variant._id': variantId },
+          { 'reservation.reservationId': reservationId }
+        ],
+      }
+    );
+
+    if (updateResult.modifiedCount === 0) {
+      console.warn(`⚠️ Reservation ${reservationId} not found or already processed`);
+      return false;
+    }
+
+    console.log(`🔓 Reservation released: ${reservationId}`);
+    return true;
+  }
+
   async deductStock(productId, variantId, quantity, orderId, correlationId) {
     const product = await Product.findById(productId);
     if (!product) {
@@ -181,7 +335,6 @@ class ProductService {
       throw error;
     }
 
-    // CHANGE: Atomic stock deduction
     const updateResult = await Product.updateOne(
       {
         _id: productId,
@@ -189,7 +342,10 @@ class ProductService {
         'variants.stock': { $gte: quantity },
       },
       {
-        $inc: { 'variants.$.stock': -quantity },
+        $inc: { 'variants.$[elem].stock': -quantity },
+      },
+      {
+        arrayFilters: [{ 'elem._id': variantId }],
       }
     );
 
@@ -199,7 +355,6 @@ class ProductService {
       throw error;
     }
 
-    // CHANGE: Publish StockDeducted event to Kafka (async, non-blocking)
     setImmediate(async () => {
       try {
         await kafkaProducer.publishStockDeducted(
@@ -217,7 +372,6 @@ class ProductService {
     return true;
   }
 
-  // CHANGE: Add restore stock method for order cancellations
   async restoreStock(productId, variantId, quantity, orderId, correlationId) {
     const product = await Product.findById(productId);
     if (!product) {
@@ -226,21 +380,30 @@ class ProductService {
       throw error;
     }
 
-    const variant = product.variants.find(v => v._id === variantId);
-    if (!variant) {
-      const error = new Error('Variant not found');
+    const variantIndex = product.variants.findIndex(v => v._id === variantId);
+    if (variantIndex === -1) {
+      const error = new Error(`Variant ${variantId} not found in product ${productId}`);
       error.code = 'VARIANT_NOT_FOUND';
       throw error;
     }
 
-    // CHANGE: Atomic stock restoration
+    console.log(`🔄 Restoring stock for product ${productId}, variant ${variantId}:`, {
+      variantName: product.variants[variantIndex].name,
+      currentStock: product.variants[variantIndex].stock,
+      quantityToRestore: quantity,
+      orderId,
+    });
+
     const updateResult = await Product.updateOne(
       {
         _id: productId,
         'variants._id': variantId,
       },
       {
-        $inc: { 'variants.$.stock': quantity },
+        $inc: { 'variants.$[elem].stock': quantity },
+      },
+      {
+        arrayFilters: [{ 'elem._id': variantId }],
       }
     );
 
@@ -250,7 +413,15 @@ class ProductService {
       throw error;
     }
 
-    // CHANGE: Publish StockRestored event to Kafka (async, non-blocking)
+    const updatedProduct = await Product.findById(productId);
+    const updatedVariant = updatedProduct.variants.find(v => v._id === variantId);
+    
+    console.log(`✅ Stock restored successfully:`, {
+      variantName: updatedVariant.name,
+      newStock: updatedVariant.stock,
+      orderId,
+    });
+    
     setImmediate(async () => {
       try {
         await kafkaProducer.publishStockRestored(
@@ -283,6 +454,8 @@ class ProductService {
         error.code = 'VARIANT_NOT_FOUND';
         throw error;
       }
+      
+      // CHANGE: Return only stock field consistently
       return {
         productId,
         productName: product.name,
@@ -293,7 +466,7 @@ class ProductService {
       };
     }
 
-    // Return total stock across all variants
+    // CHANGE: Return total stock across all variants
     const totalStock = product.variants.reduce((sum, v) => sum + v.stock, 0);
     return {
       productId,
