@@ -328,27 +328,46 @@ app.use('/api/orders', authenticateToken, async (req, res) => {
   }
 });
 
+// CHANGE: Add after existing service proxies (around line 150)
+
+app.use('/api/ai', async (req, res) => {
+  try {
+    const response = await fetch(`http://localhost:4004/api${req.path}`, {
+      method: req.method,
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Correlation-ID': req.correlationId,
+      },
+      body: req.method !== 'GET' ? JSON.stringify(req.body) : undefined,
+    });
+
+    const data = await response.json();
+    res.status(response.status).json(data);
+  } catch (error) {
+    console.error('AI service error:', error);
+    res.status(503).json({ error: 'AI service unavailable' });
+  }
+});
+
 // CHANGE: Health check endpoint with circuit breaker status
-app.get('/health', (req, res) => {
-  const healthStatus = {
-    status: 'healthy',
-    timestamp: new Date().toISOString(),
-    services: {
-      auth: {
-        status: authServiceBreaker.opened ? 'circuit_open' : 'healthy',
-        stats: authServiceBreaker.stats
+app.use('/api/ai', async (req, res) => {
+  try {
+    const response = await fetch(`http://localhost:4004/api${req.path}`, {
+      method: req.method,
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Correlation-ID': req.correlationId,
       },
-      product: {
-        status: productServiceBreaker.opened ? 'circuit_open' : 'healthy',
-        stats: productServiceBreaker.stats
-      },
-      order: {
-        status: orderServiceBreaker.opened ? 'circuit_open' : 'healthy',
-        stats: orderServiceBreaker.stats
-      }
-    }
-  };
-  res.json(healthStatus);
+      body: req.method !== 'GET' ? JSON.stringify(req.body) : undefined,
+      timeout: 30000, // CHANGE: Longer timeout for AI operations
+    });
+
+    const data = await response.json();
+    res.status(response.status).json(data);
+  } catch (error) {
+    console.error('AI service error:', error);
+    res.status(503).json({ error: 'AI service unavailable' });
+  }
 });
 
 // CHANGE: Create executor with internal authentication
