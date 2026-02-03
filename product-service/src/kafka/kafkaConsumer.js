@@ -39,12 +39,20 @@ class ProductServiceConsumer {
     return this.consumer.disconnect();
   }
 
-  // CHANGE: Refactored to isolate errors per item (matching cancellation pattern)
+  // CHANGE: Fix saga order detection to use proper correlation ID pattern
   async _handleOrderCreated(event, context) {
     const { orderId, items } = event.payload;
     const { correlationId } = context;
 
     console.log(`🛒 Processing OrderCreated: ${orderId} (${items.length} items)`);
+
+    // CHANGE: More specific saga order detection - look for seller ID suffix pattern
+    const isSagaOrder = correlationId && correlationId.match(/-[a-f0-9]{24}$/);
+    
+    if (isSagaOrder) {
+      console.log(`⚠️ Skipping stock deduction for saga order: ${orderId} (stock already deducted via reservation confirmation)`);
+      return;
+    }
 
     // CHANGE: Track deduction results for each item
     const deductionLog = [];
@@ -125,7 +133,7 @@ class ProductServiceConsumer {
     }
   }
 
-  // CHANGE: Add detailed logging and validation for order cancellation
+  // CHANGE: Enhanced order cancellation handler with proper stock restoration
   async _handleOrderCancelled(event, context) {
     const { orderId, items } = event.payload;
     const { correlationId } = context;
@@ -139,14 +147,16 @@ class ProductServiceConsumer {
     for (const item of items) {
       try {
         // CHANGE: Log the item being processed
-        console.log(`🔄 Restoring stock for item:`, {
+        console.log(`🔄 Restoring stock for cancelled order item:`, {
           productId: item.productId,
           variantId: item.variantId,
           quantity: item.quantity,
           productName: item.productName,
           variantName: item.variantName,
+          orderId,
         });
 
+        // CHANGE: Use restoreStock method instead of deductStock with negative quantity
         await productService.restoreStock(
           item.productId,
           item.variantId,
@@ -162,8 +172,8 @@ class ProductServiceConsumer {
         });
 
         console.log(
-          `✅ Stock restored: ${item.productName}${item.variantName ? ` (${item.variantName})` : ''} ` +
-          `(variant: ${item.variantId}, qty: ${item.quantity})`
+          `✅ Stock restored for cancelled order: ${item.productName}${item.variantName ? ` (${item.variantName})` : ''} ` +
+          `(variant: ${item.variantId}, qty: ${item.quantity}, order: ${orderId})`
         );
       } catch (error) {
         restorationLog.push({
@@ -174,8 +184,8 @@ class ProductServiceConsumer {
         });
 
         console.error(
-          `❌ Stock restoration failed for Product ${item.productId}, ` +
-          `Variant ${item.variantId || 'default'}:`,
+          `❌ Stock restoration failed for cancelled order - Product ${item.productId}, ` +
+          `Variant ${item.variantId || 'default'}, Order ${orderId}:`,
           error.message
         );
         
@@ -194,7 +204,7 @@ class ProductServiceConsumer {
     });
 
     if (failCount > 0) {
-      console.error(`⚠️ Some items failed to restore:`, 
+      console.error(`⚠️ Some items failed to restore stock for cancelled order ${orderId}:`, 
         restorationLog.filter(r => r.status === 'failed')
       );
     }

@@ -103,6 +103,97 @@ class ProductController {
     }
   }
 
+  // CHANGE: Add stock reservation endpoint
+  async reserveStock(req, res, next) {
+    try {
+      const { id } = req.params;
+      const { variantId, quantity, orderId, timeoutMs } = req.body;
+
+      req.log.info({
+        productId: id,
+        variantId,
+        quantity,
+        orderId,
+        timeoutMs,
+      }, 'Reserving stock');
+
+      const reservation = await productService.reserveStock(
+        id, 
+        variantId, 
+        quantity, 
+        orderId, 
+        timeoutMs || 300000, // Default 5 minutes
+        req.correlationId
+      );
+
+      req.log.info({
+        productId: id,
+        variantId,
+        quantity,
+        orderId,
+        reservationId: reservation.reservationId,
+      }, 'Stock reserved successfully');
+
+      res.status(201).json(reservation);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  // CHANGE: Add confirm reservation endpoint
+  async confirmReservation(req, res, next) {
+    try {
+      const { id } = req.params;
+      const { variantId, reservationId, orderId } = req.body;
+
+      req.log.info({
+        productId: id,
+        variantId,
+        reservationId,
+        orderId,
+      }, 'Confirming reservation');
+
+      await productService.confirmReservation(id, variantId, reservationId, orderId, req.correlationId);
+
+      req.log.info({
+        productId: id,
+        variantId,
+        reservationId,
+        orderId,
+      }, 'Reservation confirmed successfully');
+
+      res.json({ success: true });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  // CHANGE: Add release reservation endpoint
+  async releaseReservation(req, res, next) {
+    try {
+      const { id } = req.params;
+      const { variantId, reservationId } = req.body;
+
+      req.log.info({
+        productId: id,
+        variantId,
+        reservationId,
+      }, 'Releasing reservation');
+
+      await productService.releaseReservation(id, variantId, reservationId, req.correlationId);
+
+      req.log.info({
+        productId: id,
+        variantId,
+        reservationId,
+      }, 'Reservation released successfully');
+
+      res.json({ success: true });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async deductStock(req, res, next) {
     try {
       const { id } = req.params;

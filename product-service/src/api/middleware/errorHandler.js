@@ -32,6 +32,11 @@ const errorHandler = (err, req, res, next) => {
     'INVALID_STOCK': 400,
     'INSUFFICIENT_STOCK': 409,
     'STOCK_DEDUCTION_FAILED': 409,
+     'RESERVATION_NOT_FOUND': 404,
+    'RESERVATION_EXPIRED': 409,
+    'RESERVATION_CONFIRMATION_FAILED': 500,
+    'STOCK_RESTORATION_FAILED': 500,
+
   };
 
   const statusCode = statusCodeMap[err.code] || 500;

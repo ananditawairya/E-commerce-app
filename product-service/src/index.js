@@ -50,8 +50,37 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 app.use(logger);
 
+// CHANGE: Add debug middleware to log all requests
+app.use((req, res, next) => {
+  console.log(`📍 ${req.method} ${req.path} - Headers: ${JSON.stringify(req.headers, null, 2)}`);
+  next();
+});
+
 // REST API routes
 app.use('/api/products', productRoutes);
+
+app.get('/debug/routes', (req, res) => {
+  const routes = [];
+  app._router.stack.forEach(middleware => {
+    if (middleware.route) {
+      routes.push({
+        path: middleware.route.path,
+        methods: Object.keys(middleware.route.methods)
+      });
+    } else if (middleware.name === 'router') {
+      middleware.handle.stack.forEach(handler => {
+        if (handler.route) {
+          const basePath = middleware.regexp.source.replace('\\/?(?=\\/|$)', '').replace(/\\\//g, '/');
+          routes.push({
+            path: basePath + handler.route.path,
+            methods: Object.keys(handler.route.methods)
+          });
+        }
+      });
+    }
+  });
+  res.json({ routes });
+});
 
 // Error handling middleware
 app.use(errorHandler);
@@ -63,6 +92,29 @@ app.get('/health', (req, res) => {
     service: 'product-service',
     timestamp: new Date().toISOString()
   });
+});
+
+// CHANGE: Add route debugging endpoint
+app.get('/debug/routes', (req, res) => {
+  const routes = [];
+  app._router.stack.forEach((middleware) => {
+    if (middleware.route) {
+      routes.push({
+        path: middleware.route.path,
+        methods: Object.keys(middleware.route.methods)
+      });
+    } else if (middleware.name === 'router') {
+      middleware.handle.stack.forEach((handler) => {
+        if (handler.route) {
+          routes.push({
+            path: `/api/products${handler.route.path}`,
+            methods: Object.keys(handler.route.methods)
+          });
+        }
+      });
+    }
+  });
+  res.json({ routes });
 });
 
 // Database connection
@@ -169,10 +221,36 @@ const startServer = async () => {
       console.log(`📡 REST API available at http://localhost:${PORT}/api/products`);
       console.log(`🔒 GraphQL endpoint secured at http://localhost:${PORT}${server.graphqlPath}`);
       console.log(`⚠️  GraphQL only accessible via API Gateway`);
+      console.log(`🔍 Debug routes at http://localhost:${PORT}/debug/routes`);
       // CHANGE: Log introspection status
       if (isDevelopment) {
         console.log(`🔍 Introspection enabled for gateway schema stitching`);
       }
+      
+      // CHANGE: Log all registered routes for debugging
+      console.log('\n📋 Registered Routes:');
+      app._router.stack.forEach((middleware) => {
+        if (middleware.route) {
+          console.log(`  ${Object.keys(middleware.route.methods).join(', ').toUpperCase()} ${middleware.route.path}`);
+        } else if (middleware.name === 'router' && middleware.regexp.source.includes('api/products')) {
+          console.log('  Product API Routes:');
+          middleware.handle.stack.forEach((handler) => {
+            if (handler.route) {
+              console.log(`    ${Object.keys(handler.route.methods).join(', ').toUpperCase()} /api/products${handler.route.path}`);
+            }
+          });
+        }
+      });
+      
+      // CHANGE: Start periodic cleanup for expired reservations
+      const productService = require('./services/productService');
+      setInterval(async () => {
+        try {
+          await productService.cleanupAllExpiredReservations();
+        } catch (error) {
+          console.error('Periodic cleanup error:', error.message);
+        }
+      }, 60000); // CHANGE: Run cleanup every minute
       
       // Start Kafka consumer AFTER server is listening (non-blocking)
       setImmediate(async () => {

@@ -165,72 +165,116 @@ const resolvers = {
   },
 
   Mutation: {
-    addToCart: async (_, { productId,productName, variantId,variantName, quantity, price }, context) => {
+    addToCart: async (_, { productId, productName, variantId, variantName, quantity, price }, context) => {
       try {
         const user = await requireBuyer(context);
         let finalProductName = productName;
         let finalVariantName = variantName;
+        
         if (!productName || (variantId && !variantName)) {
-        const product = await getProductDetails(productId, context.correlationId);
-        finalProductName = productName || product.name;
-         if (variantId && !variantName) {
-          const variant = product.variants.find(v => v.id === variantId);
-          if (!variant) {
-            throw new Error('Variant not found');
+          const product = await getProductDetails(productId, context.correlationId);
+          finalProductName = productName || product.name;
+          if (variantId && !variantName) {
+            const variant = product.variants.find(v => v.id === variantId);
+            if (!variant) {
+              throw new Error('Variant not found');
+            }
+            finalVariantName = variant.name;
           }
-          finalVariantName = variant.name;
         }
-      }
 
-
-        // CHANGE: Validate stock availability via REST API
-        const stockInfo = await getProductStock(productId, variantId, context.correlationId);
-
-        // CHANGE: Get current cart to check existing quantity
-        const cartResponse = await axios.get(
-          `${CART_API_URL}/${user.userId}`,
-          {
-            headers: {
-              'X-Correlation-ID': context.correlationId,
+        // CHANGE: Create a temporary reservation to prevent race conditions
+        let reservationId = null;
+        try {
+          const reservationResponse = await axios.post(
+            `${PRODUCT_API_URL}/${productId}/reserve-stock`,
+            {
+              variantId,
+              quantity,
+              orderId: `cart-temp-${user.userId}-${Date.now()}`,
+              timeoutMs: 30000, // 30 seconds for cart operation
             },
-          }
-        );
-        const cart = cartResponse.data;
-
-        const existingItem = cart.items.find(
-          item => item.productId === productId &&
-            (item.variantId || null) === (variantId || null)
-        );
-        const existingQuantity = existingItem ? existingItem.quantity : 0;
-        const totalRequestedQuantity = existingQuantity + quantity;
-
-        if (totalRequestedQuantity > stockInfo.stock) {
-          // CHANGE: Improved error message with clearer guidance
-          throw new Error(
-            `Cannot add ${quantity} units. You already have ${existingQuantity} in cart. ` +
-            `Product has ${stockInfo.stock} total stock. ` +
-            `You can add up to ${Math.max(0, stockInfo.stock - existingQuantity)} more units.`
+            {
+              headers: {
+                'X-Correlation-ID': context.correlationId,
+              },
+              timeout: 5000,
+            }
           );
-        }
+          reservationId = reservationResponse.data.reservationId;
 
-        // CHANGE: Call REST API to add to cart
-        const response = await axios.post(
-          `${CART_API_URL}/${user.userId}/items`,
-           { 
-            productId, 
-            productName: finalProductName, 
-            variantId, 
-            variantName: finalVariantName, 
-            quantity, 
-            price 
-          },
-          {
-            headers: {
-              'X-Correlation-ID': context.correlationId,
+          // CHANGE: Get current cart to check existing quantity
+          const cartResponse = await axios.get(
+            `${CART_API_URL}/${user.userId}`,
+            {
+              headers: {
+                'X-Correlation-ID': context.correlationId,
+              },
+            }
+          );
+          const cart = cartResponse.data;
+
+          const existingItem = cart.items.find(
+            item => item.productId === productId &&
+              (item.variantId || null) === (variantId || null)
+          );
+          const existingQuantity = existingItem ? existingItem.quantity : 0;
+
+          // CHANGE: Call REST API to add to cart
+          const response = await axios.post(
+            `${CART_API_URL}/${user.userId}/items`,
+            { 
+              productId, 
+              productName: finalProductName, 
+              variantId, 
+              variantName: finalVariantName, 
+              quantity, 
+              price 
             },
+            {
+              headers: {
+                'X-Correlation-ID': context.correlationId,
+              },
+            }
+          );
+
+          // CHANGE: Release the temporary reservation after successful cart addition
+          await axios.post(
+            `${PRODUCT_API_URL}/${productId}/release-reservation`,
+            {
+              variantId,
+              reservationId,
+            },
+            {
+              headers: {
+                'X-Correlation-ID': context.correlationId,
+              },
+            }
+          );
+
+          return response.data;
+        } catch (error) {
+          // CHANGE: Release reservation on any error
+          if (reservationId) {
+            try {
+              await axios.post(
+                `${PRODUCT_API_URL}/${productId}/release-reservation`,
+                {
+                  variantId,
+                  reservationId,
+                },
+                {
+                  headers: {
+                    'X-Correlation-ID': context.correlationId,
+                  },
+                }
+              );
+            } catch (releaseError) {
+              console.error('Failed to release reservation:', releaseError.message);
+            }
           }
-        );
-        return response.data;
+          throw new Error(error.response?.data?.message || error.message);
+        }
       } catch (error) {
         throw new Error(error.response?.data?.message || error.message);
       }
@@ -307,11 +351,11 @@ const resolvers = {
       }
     },
 
-  checkout: async (_, { shippingAddress }, context) => {
+   checkout: async (_, { shippingAddress }, context) => {
   try {
     const user = await requireBuyer(context);
 
-    // CHANGE: Get cart via REST API
+    // CHANGE: Get cart without clearing it first
     const cartResponse = await axios.get(
       `${CART_API_URL}/${user.userId}`,
       {
@@ -363,7 +407,7 @@ const resolvers = {
       0
     );
 
-    // CHANGE: Create orders via REST API (returns array of orders)
+    // CHANGE: Create orders via REST API (cart clearing happens atomically in service)
     const orderResponse = await axios.post(
       `${ORDERS_API_URL}/${user.userId}`,
       {
@@ -384,15 +428,7 @@ const resolvers = {
       orderIds: orders.map(o => o.orderId) 
     }, 'Orders created, stock deduction will be processed via Kafka');
 
-    // CHANGE: Clear cart via REST API
-    await axios.delete(
-      `${CART_API_URL}/${user.userId}`,
-      {
-        headers: {
-          'X-Correlation-ID': context.correlationId,
-        },
-      }
-    );
+    // CHANGE: Cart is cleared atomically in the order service
 
     // CHANGE: Return first order for backward compatibility (mobile expects single order)
     // In future, update mobile to handle multiple orders
@@ -401,7 +437,6 @@ const resolvers = {
     throw new Error(error.response?.data?.message || error.message);
   }
 },
-
     updateOrderStatus: async (_, { orderId, status }, context) => {
       try {
         const user = await requireSeller(context);

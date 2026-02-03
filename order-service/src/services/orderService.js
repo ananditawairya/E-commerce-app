@@ -136,8 +136,43 @@ async createOrder(userId, { items, totalAmount, shippingAddress }, correlationId
     throw new Error('Saga coordinator not initialized');
   }
 
+  // CHANGE: Atomically get and clear cart to prevent race conditions
+  const cart = await Cart.findOne({ userId });
+  if (!cart || cart.items.length === 0) {
+    throw new Error('Cart is empty or not found');
+  }
+
+  // CHANGE: Clear cart atomically using findOneAndUpdate with empty items
+  const clearedCart = await Cart.findOneAndUpdate(
+    { userId, 'items.0': { $exists: true } }, // Only update if cart has items
+    { items: [] },
+    { new: false } // Return original document before update
+  );
+
+  // CHANGE: If cart was already empty (race condition), throw error
+  if (!clearedCart || clearedCart.items.length === 0) {
+    throw new Error('Cart is empty or already processed');
+  }
+
+  // CHANGE: Use original cart items for order creation
+  const cartItems = clearedCart.items;
+
+  // CHANGE: Map cart items to order items with seller information
+  const actualItems = cartItems.map(cartItem => {
+    const matchingItem = items.find(i => i.productId === cartItem.productId);
+    return {
+      productId: cartItem.productId,
+      productName: cartItem.productName,
+      variantId: cartItem.variantId,
+      variantName: cartItem.variantName,
+      quantity: cartItem.quantity,
+      price: cartItem.price,
+      sellerId: matchingItem?.sellerId || 'unknown'
+    };
+  });
+
   // CHANGE: Group items by seller to create separate orders
-  const itemsBySeller = items.reduce((acc, item) => {
+  const itemsBySeller = actualItems.reduce((acc, item) => {
     if (!acc[item.sellerId]) {
       acc[item.sellerId] = [];
     }
@@ -206,9 +241,18 @@ async createOrder(userId, { items, totalAmount, shippingAddress }, correlationId
 
       console.log(`✅ Order created successfully via saga: ${order.orderId} for seller: ${sellerId}`);
     } catch (error) {
-      // CHANGE: If saga fails, update order status to cancelled
+      // CHANGE: If saga fails, update order status to cancelled and restore cart
       order.status = 'cancelled';
       await order.save();
+
+      // CHANGE: Restore cart items for failed order only if no other orders succeeded
+      if (createdOrders.length === 0) {
+        await Cart.findOneAndUpdate(
+          { userId },
+          { $push: { items: { $each: sellerItems } } },
+          { upsert: true }
+        );
+      }
 
       console.error(`❌ Order creation saga failed: ${order.orderId}`, error.message);
       
@@ -217,34 +261,54 @@ async createOrder(userId, { items, totalAmount, shippingAddress }, correlationId
     }
   }
 
+  // CHANGE: If no orders were created successfully, restore the entire cart
+  if (createdOrders.length === 0 || createdOrders.every(o => o.status === 'cancelled')) {
+    await Cart.findOneAndUpdate(
+      { userId },
+      { items: cartItems },
+      { upsert: true }
+    );
+    throw new Error('Order creation failed for all items');
+  }
+
   // CHANGE: Return array of orders instead of single order
   return createdOrders;
 }
 
-  // CHANGE: Execute saga steps sequentially
-  async executeSagaSteps(saga, correlationId) {
-    const definition = orderCreationSaga;
+// CHANGE: Update executeSagaSteps to pass saga data to steps
+async executeSagaSteps(saga, correlationId) {
+  const definition = orderCreationSaga;
 
-    for (let i = 0; i < definition.steps.length; i++) {
-      const step = definition.steps[i];
+  for (let i = 0; i < definition.steps.length; i++) {
+    const step = definition.steps[i];
+    
+    try {
+      console.log(`🔄 Executing saga step: ${step.name}`);
       
-      try {
-        console.log(`🔄 Executing saga step: ${step.name}`);
-        
-        const stepData = await step.execute(saga.payload, correlationId);
-        
-        await sagaCoordinator.completeStep(saga.sagaId, step.name, stepData, correlationId);
-        
-        console.log(`✅ Saga step completed: ${step.name}`);
-      } catch (error) {
-        console.error(`❌ Saga step failed: ${step.name}`, error.message);
-        
-        await sagaCoordinator.failStep(saga.sagaId, step.name, error, correlationId);
-        
-        throw error;
-      }
+      // CHANGE: Pass saga steps data to step execution for access to previous step data
+      const payloadWithSteps = {
+        ...saga.payload,
+        sagaSteps: saga.steps
+      };
+      
+      const stepData = await step.execute(payloadWithSteps, correlationId);
+      
+      await sagaCoordinator.completeStep(saga.sagaId, step.name, stepData, correlationId);
+      
+      // CHANGE: Refresh saga data after each step completion
+      const updatedSaga = await sagaCoordinator.getSagaStatus(saga.sagaId);
+      saga.steps = updatedSaga.steps;
+      
+      console.log(`✅ Saga step completed: ${step.name}`);
+    } catch (error) {
+      console.error(`❌ Saga step failed: ${step.name}`, error.message);
+      
+      await sagaCoordinator.failStep(saga.sagaId, step.name, error, correlationId);
+      
+      throw error;
     }
   }
+}
 
   async getOrdersByBuyer(buyerId) {
     const orders = await Order.find({ buyerId })
@@ -299,30 +363,33 @@ async createOrder(userId, { items, totalAmount, shippingAddress }, correlationId
   }
 
   async cancelOrder(orderId, sellerId, correlationId) {
-    const order = await Order.findById(orderId);
+  const order = await Order.findById(orderId);
 
-    if (!order) {
-      const error = new Error('Order not found');
-      error.code = 'ORDER_NOT_FOUND';
-      throw error;
-    }
+  if (!order) {
+    const error = new Error('Order not found');
+    error.code = 'ORDER_NOT_FOUND';
+    throw error;
+  }
 
-    const hasItems = order.items.some(item => item.sellerId === sellerId);
-    if (!hasItems) {
-      const error = new Error('Unauthorized to cancel this order');
-      error.code = 'UNAUTHORIZED';
-      throw error;
-    }
+  const hasItems = order.items.some(item => item.sellerId === sellerId);
+  if (!hasItems) {
+    const error = new Error('Unauthorized to cancel this order');
+    error.code = 'UNAUTHORIZED';
+    throw error;
+  }
 
-    if (order.status === 'cancelled' || order.status === 'delivered') {
-      const error = new Error('Order cannot be cancelled');
-      error.code = 'CANNOT_CANCEL_ORDER';
-      throw error;
-    }
+  if (order.status === 'cancelled' || order.status === 'delivered') {
+    const error = new Error('Order cannot be cancelled');
+    error.code = 'CANNOT_CANCEL_ORDER';
+    throw error;
+  }
 
-    order.status = 'cancelled';
-    await order.save();
+  // CHANGE: Update order status first
+  order.status = 'cancelled';
+  await order.save();
 
+  // CHANGE: Publish order cancelled event with critical flag to ensure stock restoration
+  try {
     await kafkaProducer.publishOrderCancelled(
       {
         orderId: order.orderId,
@@ -332,9 +399,15 @@ async createOrder(userId, { items, totalAmount, shippingAddress }, correlationId
       },
       correlationId
     );
-
-    return order;
+    console.log(`✅ Published OrderCancelled event for order: ${order.orderId}`);
+  } catch (error) {
+    console.error(`❌ Failed to publish OrderCancelled event for order: ${order.orderId}`, error);
+    // CHANGE: Don't throw error here - order is already cancelled, but log the issue
+    console.error('⚠️ Stock may not be restored automatically. Manual intervention may be required.');
   }
+
+  return order;
+}
 }
 
 module.exports = new OrderService();

@@ -149,11 +149,12 @@ class ProductService {
     return true;
   }
 
+  // CHANGE: Enhanced reservation system with proper timeout and cleanup
   async reserveStock(productId, variantId, quantity, orderId, reservationTimeoutMs = 300000, correlationId) {
     const reservationId = uuidv4();
     const expiresAt = new Date(Date.now() + reservationTimeoutMs);
 
-    // CHANGE: Simplified atomic operation using only stock field
+    // CHANGE: Atomic operation to reserve stock and create reservation record
     const updateResult = await Product.updateOne(
       {
         _id: productId,
@@ -169,6 +170,7 @@ class ProductService {
             quantity,
             expiresAt,
             status: 'active',
+            createdAt: new Date(),
           }
         }
       },
@@ -185,6 +187,19 @@ class ProductService {
 
     console.log(`✅ Stock reserved: ${quantity} units for order ${orderId} (reservation: ${reservationId})`);
 
+    // CHANGE: Schedule automatic cleanup with more reliable timing
+    const cleanupTimeout = setTimeout(async () => {
+      try {
+        await this.cleanupExpiredReservation(productId, variantId, reservationId);
+      } catch (error) {
+        console.error(`Failed to cleanup expired reservation ${reservationId}:`, error.message);
+      }
+    }, reservationTimeoutMs + 1000); // CHANGE: 1 second buffer instead of 5
+
+    // CHANGE: Store cleanup timeout for potential cancellation
+    this._cleanupTimeouts = this._cleanupTimeouts || new Map();
+    this._cleanupTimeouts.set(reservationId, cleanupTimeout);
+
     return {
       reservationId,
       productId,
@@ -195,6 +210,8 @@ class ProductService {
     };
   }
 
+
+  // CHANGE: Confirm reservation and finalize stock deduction
   async confirmReservation(productId, variantId, reservationId, orderId, correlationId) {
     const product = await Product.findById(productId);
     if (!product) {
@@ -210,14 +227,21 @@ class ProductService {
       throw error;
     }
 
-    const reservation = variant.reservations.find(r => r.reservationId === reservationId);
+    const reservation = variant.reservations?.find(r => r.reservationId === reservationId);
     if (!reservation || reservation.status !== 'active') {
       const error = new Error('Reservation not found or already processed');
       error.code = 'RESERVATION_NOT_FOUND';
       throw error;
     }
 
-    // CHANGE: Mark reservation as confirmed without additional stock changes
+    // CHANGE: Check if reservation has expired
+    if (new Date() > reservation.expiresAt) {
+      const error = new Error('Reservation has expired');
+      error.code = 'RESERVATION_EXPIRED';
+      throw error;
+    }
+
+    // CHANGE: Mark reservation as confirmed
     const updateResult = await Product.updateOne(
       {
         _id: productId,
@@ -228,6 +252,7 @@ class ProductService {
       {
         $set: {
           'variants.$[variant].reservations.$[reservation].status': 'confirmed',
+          'variants.$[variant].reservations.$[reservation].confirmedAt': new Date(),
         }
       },
       {
@@ -262,7 +287,14 @@ class ProductService {
     return true;
   }
 
+  // CHANGE: Release reservation and restore stock
   async releaseReservation(productId, variantId, reservationId, correlationId) {
+    // CHANGE: Cancel scheduled cleanup if exists
+    if (this._cleanupTimeouts?.has(reservationId)) {
+      clearTimeout(this._cleanupTimeouts.get(reservationId));
+      this._cleanupTimeouts.delete(reservationId);
+    }
+
     const product = await Product.findById(productId);
     if (!product) {
       console.warn(`⚠️ Product ${productId} not found for reservation release`);
@@ -275,7 +307,7 @@ class ProductService {
       return false;
     }
 
-    const reservation = variant.reservations.find(r => r.reservationId === reservationId);
+    const reservation = variant.reservations?.find(r => r.reservationId === reservationId);
     if (!reservation || reservation.status !== 'active') {
       console.warn(`⚠️ Reservation ${reservationId} not found or already processed`);
       return false;
@@ -293,6 +325,7 @@ class ProductService {
         $inc: { 'variants.$[variant].stock': reservation.quantity },
         $set: {
           'variants.$[variant].reservations.$[reservation].status': 'released',
+          'variants.$[variant].reservations.$[reservation].releasedAt': new Date(),
         }
       },
       {
@@ -308,10 +341,57 @@ class ProductService {
       return false;
     }
 
-    console.log(`🔓 Reservation released: ${reservationId}`);
+    console.log(`🔓 Reservation released: ${reservationId} - restored ${reservation.quantity} units`);
     return true;
   }
 
+  // CHANGE: Cleanup expired reservations automatically
+  async cleanupExpiredReservation(productId, variantId, reservationId) {
+    const product = await Product.findById(productId);
+    if (!product) return;
+
+    const variant = product.variants.find(v => v._id === variantId);
+    if (!variant) return;
+
+    const reservation = variant.reservations?.find(r => r.reservationId === reservationId);
+    if (!reservation || reservation.status !== 'active') return;
+
+    // CHANGE: Only cleanup if reservation has actually expired
+    if (new Date() <= reservation.expiresAt) return;
+
+    console.log(`🧹 Cleaning up expired reservation: ${reservationId}`);
+
+    // CHANGE: Use atomic operation to restore stock and mark as expired
+    const updateResult = await Product.updateOne(
+      {
+        _id: productId,
+        'variants._id': variantId,
+        'variants.reservations.reservationId': reservationId,
+        'variants.reservations.status': 'active',
+        'variants.reservations.expiresAt': { $lt: new Date() }, // CHANGE: Ensure it's actually expired
+      },
+      {
+        $inc: { 'variants.$[variant].stock': reservation.quantity },
+        $set: {
+          'variants.$[variant].reservations.$[reservation].status': 'expired',
+          'variants.$[variant].reservations.$[reservation].expiredAt': new Date(),
+        }
+      },
+      {
+        arrayFilters: [
+          { 'variant._id': variantId },
+          { 'reservation.reservationId': reservationId }
+        ],
+      }
+    );
+
+    if (updateResult.modifiedCount > 0) {
+      console.log(`✅ Expired reservation cleaned up: ${reservationId} - restored ${reservation.quantity} units`);
+    } else {
+      console.log(`⚠️ Reservation ${reservationId} was already processed or not expired`);
+    }
+  }
+  // CHANGE: Keep existing deductStock for backward compatibility
   async deductStock(productId, variantId, quantity, orderId, correlationId) {
     const product = await Product.findById(productId);
     if (!product) {
@@ -373,6 +453,13 @@ class ProductService {
   }
 
   async restoreStock(productId, variantId, quantity, orderId, correlationId) {
+    // CHANGE: Add input validation
+    if (!productId || !variantId || !quantity || quantity <= 0) {
+      const error = new Error('Invalid parameters for stock restoration');
+      error.code = 'INVALID_PARAMETERS';
+      throw error;
+    }
+
     const product = await Product.findById(productId);
     if (!product) {
       const error = new Error('Product not found');
@@ -387,13 +474,16 @@ class ProductService {
       throw error;
     }
 
-    console.log(`🔄 Restoring stock for product ${productId}, variant ${variantId}:`, {
+    console.log(`🔄 Restoring stock for cancelled order ${orderId}:`, {
+      productId,
+      productName: product.name,
+      variantId,
       variantName: product.variants[variantIndex].name,
       currentStock: product.variants[variantIndex].stock,
       quantityToRestore: quantity,
-      orderId,
     });
 
+    // CHANGE: Use atomic update operation to prevent race conditions
     const updateResult = await Product.updateOne(
       {
         _id: productId,
@@ -408,20 +498,23 @@ class ProductService {
     );
 
     if (updateResult.modifiedCount === 0) {
-      const error = new Error('Stock restoration failed');
+      const error = new Error(`Stock restoration failed for product ${productId}, variant ${variantId}`);
       error.code = 'STOCK_RESTORATION_FAILED';
       throw error;
     }
 
+    // CHANGE: Verify the restoration by fetching updated product
     const updatedProduct = await Product.findById(productId);
     const updatedVariant = updatedProduct.variants.find(v => v._id === variantId);
-    
-    console.log(`✅ Stock restored successfully:`, {
-      variantName: updatedVariant.name,
+
+    console.log(`✅ Stock restored successfully for cancelled order ${orderId}:`, {
+      productName: updatedVariant.name,
+      variantId,
       newStock: updatedVariant.stock,
-      orderId,
+      quantityRestored: quantity,
     });
-    
+
+    // CHANGE: Publish stock restored event asynchronously
     setImmediate(async () => {
       try {
         await kafkaProducer.publishStockRestored(
@@ -454,14 +547,22 @@ class ProductService {
         error.code = 'VARIANT_NOT_FOUND';
         throw error;
       }
-      
-      // CHANGE: Return only stock field consistently
+
+      // CHANGE: Calculate available stock excluding active reservations
+      const activeReservations = variant.reservations?.filter(r =>
+        r.status === 'active' && new Date() <= r.expiresAt
+      ) || [];
+      const reservedQuantity = activeReservations.reduce((sum, r) => sum + r.quantity, 0);
+      const availableStock = variant.stock;
+
       return {
         productId,
         productName: product.name,
         variantId,
         variantName: variant.name,
-        stock: variant.stock,
+        stock: availableStock,
+        reservedStock: reservedQuantity,
+        totalStock: availableStock + reservedQuantity,
         sellerId: product.sellerId,
       };
     }
@@ -474,6 +575,37 @@ class ProductService {
       stock: totalStock,
       sellerId: product.sellerId,
     };
+  }
+
+  async cleanupAllExpiredReservations() {
+    try {
+      const products = await Product.find({
+        'variants.reservations': { $exists: true, $ne: [] }
+      });
+
+      let cleanedCount = 0;
+
+      for (const product of products) {
+        for (const variant of product.variants) {
+          if (variant.reservations && variant.reservations.length > 0) {
+            const expiredReservations = variant.reservations.filter(r =>
+              r.status === 'active' && new Date() > r.expiresAt
+            );
+
+            for (const reservation of expiredReservations) {
+              await this.cleanupExpiredReservation(product._id, variant._id, reservation.reservationId);
+              cleanedCount++;
+            }
+          }
+        }
+      }
+
+      console.log(`🧹 Cleaned up ${cleanedCount} expired reservations`);
+      return cleanedCount;
+    } catch (error) {
+      console.error('Failed to cleanup expired reservations:', error);
+      throw error;
+    }
   }
 }
 

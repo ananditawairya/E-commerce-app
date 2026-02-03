@@ -1,0 +1,14 @@
+{
+  "scripts": {
+    "test:race-conditions": "mocha tests/integration/race-conditions.test.js --timeout 30000",
+    "test:saga-compensation": "mocha tests/integration/saga-compensation.test.js --timeout 30000",
+    "test:load": "mocha tests/load/concurrent-operations.test.js --timeout 60000",
+    "test:all-scenarios": "npm run test:race-conditions && npm run test:saga-compensation && npm run test:load"
+  },
+  "devDependencies": {
+    "mocha": "^10.2.0",
+    "chai": "^4.3.7",
+    "axios": "^1.6.0",
+    "mongoose": "^7.6.0"
+  }
+}

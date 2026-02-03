@@ -1,7 +1,38 @@
-// backend/product-service/src/models/Product.js
-
 const mongoose = require('mongoose');
 const { v4: uuidv4 } = require('uuid');
+
+// CHANGE: Add reservation schema for stock management
+const reservationSchema = new mongoose.Schema({
+  reservationId: {
+    type: String,
+    required: true,
+  },
+  orderId: {
+    type: String,
+    required: true,
+  },
+  quantity: {
+    type: Number,
+    required: true,
+    min: 1,
+  },
+  status: {
+    type: String,
+    enum: ['active', 'confirmed', 'released', 'expired'],
+    default: 'active',
+  },
+  expiresAt: {
+    type: Date,
+    required: true,
+  },
+  createdAt: {
+    type: Date,
+    default: Date.now,
+  },
+  confirmedAt: Date,
+  releasedAt: Date,
+  expiredAt: Date,
+}, { _id: false });
 
 const variantSchema = new mongoose.Schema({
   _id: {
@@ -33,6 +64,8 @@ const variantSchema = new mongoose.Schema({
     unique: true,
     sparse: true,
   },
+  // CHANGE: Add reservations array to track stock reservations
+  reservations: [reservationSchema],
 }, { _id: false });
 
 const productSchema = new mongoose.Schema({
@@ -167,5 +200,7 @@ variantSchema.virtual('effectiveImages').get(function() {
 productSchema.index({ name: 'text', description: 'text', category: 'text' });
 productSchema.index({ sellerId: 1, createdAt: -1 });
 productSchema.index({ isActive: 1, category: 1 });
+// CHANGE: Add index for reservation cleanup queries
+productSchema.index({ 'variants.reservations.expiresAt': 1, 'variants.reservations.status': 1 });
 
 module.exports = mongoose.model('Product', productSchema);

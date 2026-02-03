@@ -1,5 +1,5 @@
 // backend/order-service/src/saga/orderCreationSaga.js
-// CHANGE: Enhanced validation with better error handling for missing products
+// CHANGE: Enhanced saga with stock reservation system
 
 const axios = require('axios');
 
@@ -23,56 +23,46 @@ const orderCreationSaga = {
   name: 'ORDER_CREATION',
   steps: [
     {
-      name: 'VALIDATE_ITEMS',
+      name: 'RESERVE_STOCK',
       execute: async (payload, correlationId) => {
-        console.log(`🔍 Validating items for order: ${payload.orderId}`);
+        console.log(`🔒 Reserving stock for order: ${payload.orderId}`);
 
-        const validationResults = [];
+        const reservations = [];
 
-        // CHANGE: Validate each item exists and has sufficient stock
+        // CHANGE: Reserve stock for each item instead of just validating
         for (const item of payload.items) {
-          // CHANGE: Log the exact variant being validated
-          console.log(`🔍 Validating: Product ${item.productId}, Variant ${item.variantId}, Quantity ${item.quantity}`);
+          console.log(`🔒 Reserving stock: Product ${item.productId}, Variant ${item.variantId}, Quantity ${item.quantity}`);
+          
           try {
-            const response = await axios.get(
-              `${PRODUCT_API_URL}/${item.productId}/stock`,
+            const response = await axios.post(
+              `${PRODUCT_API_URL}/${item.productId}/reserve-stock`,
               {
-                params: { variantId: item.variantId },
+                variantId: item.variantId,
+                quantity: item.quantity,
+                orderId: payload.orderId,
+                timeoutMs: 300000, // 5 minutes
+              },
+              {
                 headers: {
                   'X-Correlation-ID': correlationId,
                 },
-                timeout: 5000,
+                timeout: 10000,
               }
             );
 
-            const stockInfo = response.data;
-
-             // CHANGE: Verify the response is for the correct variant
-            if (item.variantId && stockInfo.variantId !== item.variantId) {
-              throw new Error(
-                `Variant mismatch: requested ${item.variantId}, got ${stockInfo.variantId}`
-              );
-            }
-
-            if (stockInfo.stock < item.quantity) {
-              throw new Error(
-                `Insufficient stock for ${item.productName}${item.variantId ? ` (${item.variantName})` : ''}: ` +
-                `Available ${stockInfo.stock}, Requested ${item.quantity}`
-              );
-            }
-
-            validationResults.push({
+            const reservation = response.data;
+            reservations.push({
               productId: item.productId,
               variantId: item.variantId,
-              available: stockInfo.stock,
-              requested: item.quantity,
-              valid: true,
+              reservationId: reservation.reservationId,
+              quantity: item.quantity,
+              productName: item.productName,
+              variantName: item.variantName,
             });
 
-                        
-            console.log(`✅ Validated: ${item.productName}${item.variantId ? ` (${item.variantName})` : ''} - ${item.quantity} units available`);
+            console.log(`✅ Stock reserved: ${item.productName}${item.variantName ? ` (${item.variantName})` : ''} - Reservation: ${reservation.reservationId}`);
           } catch (error) {
-            // CHANGE: Enhanced error handling for 404 and other errors
+            // CHANGE: Enhanced error handling for reservation failures
             if (error.response?.status === 404) {
               const productInfo = item.variantId
                 ? `Product ${item.productId} variant ${item.variantId}`
@@ -82,32 +72,63 @@ const orderCreationSaga = {
               );
             }
 
+            if (error.response?.status === 409) {
+              throw new Error(
+                `Insufficient stock for ${item.productName}${item.variantId ? ` (${item.variantName})` : ''}. ` +
+                `Please check availability and try again.`
+              );
+            }
+
             // CHANGE: Handle network/timeout errors
             if (error.code === 'ECONNREFUSED') {
               throw new Error(
-                `Product service unavailable. Cannot validate ${item.productName}.`
+                `Product service unavailable. Cannot reserve stock for ${item.productName}.`
               );
             }
 
             if (error.code === 'ETIMEDOUT' || error.code === 'ECONNABORTED') {
               throw new Error(
-                `Timeout validating ${item.productName}. Product service may be slow or unavailable.`
+                `Timeout reserving stock for ${item.productName}. Product service may be slow or unavailable.`
               );
             }
 
             // CHANGE: Re-throw with context
-            console.error(`❌ Validation failed for ${item.productId} variant ${item.variantId}:`, error.message);
+            console.error(`❌ Stock reservation failed for ${item.productId} variant ${item.variantId}:`, error.message);
             throw new Error(
-              `Validation failed for ${item.productName}${item.variantId ? ` (${item.variantName})` : ''}: ${error.response?.data?.message || error.message}`
+              `Stock reservation failed for ${item.productName}${item.variantId ? ` (${item.variantName})` : ''}: ${error.response?.data?.message || error.message}`
             );
           }
         }
 
-        return { validationResults };
+        return { reservations };
       },
       compensate: async (payload, stepData, correlationId) => {
-        // CHANGE: No compensation needed for validation step
-        console.log(`ℹ️  No compensation needed for validation step`);
+        console.log(`🔄 Releasing stock reservations for order: ${payload.orderId}`);
+
+        // CHANGE: Release all reservations made in this step
+        if (stepData.reservations) {
+          for (const reservation of stepData.reservations) {
+            try {
+              await axios.post(
+                `${PRODUCT_API_URL}/${reservation.productId}/release-reservation`,
+                {
+                  variantId: reservation.variantId,
+                  reservationId: reservation.reservationId,
+                },
+                {
+                  headers: {
+                    'X-Correlation-ID': correlationId,
+                  },
+                  timeout: 10000,
+                }
+              );
+              
+              console.log(`✅ Released reservation: ${reservation.reservationId} for ${reservation.productName}`);
+            } catch (error) {
+              console.error(`❌ Failed to release reservation ${reservation.reservationId}:`, error.message);
+            }
+          }
+        }
       },
     },
 
@@ -116,21 +137,94 @@ const orderCreationSaga = {
       execute: async (payload, correlationId) => {
         console.log(`✅ Confirming order: ${payload.orderId}`);
 
-        // CHANGE: Order confirmation logic
+        // CHANGE: Order confirmation logic - no payment processing yet
         const confirmedAt = new Date().toISOString();
-        console.log(`📡 Stock deduction will be handled by Kafka OrderCreated event`);
+        console.log(`📋 Order confirmed without payment processing (MVP)`);
+        
         return {
           confirmedAt,
           status: 'confirmed',
         };
       },
       compensate: async (payload, stepData, correlationId) => {
-        console.log(`🔄 Cancelling order: ${payload.orderId}`);
-
+        console.log(`🔄 Cancelling order confirmation: ${payload.orderId}`);
         // CHANGE: Order cancellation logic (update order status to cancelled)
         // This is handled in the order service's cancelOrder method
       },
     },
+
+    {
+      name: 'CONFIRM_STOCK_RESERVATIONS',
+      execute: async (payload, correlationId) => {
+        console.log(`🔒 Confirming stock reservations for order: ${payload.orderId}`);
+
+        // CHANGE: Get reservations from RESERVE_STOCK step data stored in saga
+        const reserveStockStep = payload.sagaSteps?.find(s => s.stepName === 'RESERVE_STOCK');
+        const reservations = reserveStockStep?.compensationData?.reservations || [];
+
+        // CHANGE: If no reservations found in saga data, skip this step
+        if (reservations.length === 0) {
+          console.log(`⚠️ No reservations found for order: ${payload.orderId}`);
+          return { confirmedReservations: [] };
+        }
+
+        for (const reservation of reservations) {
+          try {
+            await axios.post(
+              `${PRODUCT_API_URL}/${reservation.productId}/confirm-reservation`,
+              {
+                variantId: reservation.variantId,
+                reservationId: reservation.reservationId,
+                orderId: payload.orderId,
+              },
+              {
+                headers: {
+                  'X-Correlation-ID': correlationId,
+                },
+                timeout: 10000,
+              }
+            );
+
+            console.log(`✅ Confirmed reservation: ${reservation.reservationId} for ${reservation.productName}`);
+          } catch (error) {
+            console.error(`❌ Failed to confirm reservation ${reservation.reservationId}:`, error.message);
+            throw new Error(`Failed to confirm stock reservation for ${reservation.productName}: ${error.message}`);
+          }
+        }
+
+        return { confirmedReservations: reservations };
+      },
+      compensate: async (payload, stepData, correlationId) => {
+        console.log(`🔄 Compensating confirmed reservations for order: ${payload.orderId}`);
+
+        // CHANGE: For confirmed reservations, we need to restore stock manually
+        if (stepData.confirmedReservations) {
+          for (const reservation of stepData.confirmedReservations) {
+            try {
+              await axios.post(
+                `${PRODUCT_API_URL}/${reservation.productId}/restore-stock`,
+                {
+                  variantId: reservation.variantId,
+                  quantity: reservation.quantity,
+                  orderId: payload.orderId,
+                },
+                {
+                  headers: {
+                    'X-Correlation-ID': correlationId,
+                  },
+                  timeout: 10000,
+                }
+              );
+              
+              console.log(`✅ Restored stock for ${reservation.productName} (${reservation.quantity} units)`);
+            } catch (error) {
+              console.error(`❌ Failed to restore stock for ${reservation.productName}:`, error.message);
+            }
+          }
+        }
+      },
+    },
+
     {
       name: 'NOTIFY_SELLERS',
       execute: async (payload, correlationId) => {
@@ -172,12 +266,14 @@ const orderCreationSaga = {
         console.log(`🔄 Sending cancellation notifications for order: ${payload.orderId}`);
 
         // CHANGE: Send cancellation notifications to sellers
-        for (const notification of stepData.notifications) {
-          try {
-            // CHANGE: Mock cancellation notification
-            console.log(`✅ Sent cancellation notice to seller: ${notification.sellerId}`);
-          } catch (error) {
-            console.warn(`⚠️  Failed to send cancellation notice to seller ${notification.sellerId}:`, error.message);
+        if (stepData.notifications) {
+          for (const notification of stepData.notifications) {
+            try {
+              // CHANGE: Mock cancellation notification
+              console.log(`✅ Sent cancellation notice to seller: ${notification.sellerId}`);
+            } catch (error) {
+              console.warn(`⚠️  Failed to send cancellation notice to seller ${notification.sellerId}:`, error.message);
+            }
           }
         }
       },
