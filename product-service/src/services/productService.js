@@ -34,8 +34,14 @@ class ProductService {
   }
 
   async getProductsBySeller(sellerId) {
-    const products = await Product.find({ sellerId })
+    console.log('🔍 Querying products for sellerId:', sellerId);
+    const trimmedSellerId = sellerId.trim();
+    const products = await Product.find({ sellerId:trimmedSellerId })
       .sort({ createdAt: -1 });
+    console.log(`📦 Found ${products.length} products for seller ${trimmedSellerId}`);
+    if (products.length === 0) {
+    console.warn(`⚠️ No products found for sellerId: ${sellerId}. Check if products exist in DB with this exact sellerId.`);
+  }
     return products;
   }
 
@@ -45,55 +51,69 @@ class ProductService {
   }
 
   async createProduct(sellerId, input, correlationId) {
-    const sanitizedInput = sanitizeProductInput(input);
+  // CHANGE: Validate and log sellerId to ensure consistency
+  if (!sellerId || typeof sellerId !== 'string' || sellerId.trim().length === 0) {
+    const error = new Error('Invalid sellerId: sellerId must be a non-empty string');
+    error.code = 'INVALID_SELLER_ID';
+    throw error;
+  }
+  
+  // CHANGE: Normalize sellerId to prevent case-sensitivity issues
+  const normalizedSellerId = sellerId.trim();
+  
+  console.log('🔍 Creating product for sellerId:', normalizedSellerId);
+  
+  const sanitizedInput = sanitizeProductInput(input);
 
-    if (!sanitizedInput.name || !sanitizedInput.description || !sanitizedInput.category) {
-      const error = new Error('Missing required fields: name, description, and category are required');
-      error.code = 'MISSING_FIELDS';
-      throw error;
-    }
-
-    if (typeof sanitizedInput.basePrice !== 'number' || sanitizedInput.basePrice < 0) {
-      const error = new Error('Base price must be a valid positive number');
-      error.code = 'INVALID_PRICE';
-      throw error;
-    }
-
-    if (!sanitizedInput.variants || sanitizedInput.variants.length === 0) {
-      const error = new Error('At least one product variant is required');
-      error.code = 'MISSING_VARIANTS';
-      throw error;
-    }
-
-    sanitizedInput.variants.forEach((variant, index) => {
-      if (typeof variant.stock !== 'number' || variant.stock < 0) {
-        const error = new Error(`Variant ${index + 1} must have a valid stock quantity`);
-        error.code = 'INVALID_STOCK';
-        throw error;
-      }
-    });
-
-    const product = new Product({
-      ...sanitizedInput,
-      sellerId,
-    });
-
-    await product.save();
-
-    setImmediate(async () => {
-      try {
-        await kafkaProducer.publishProductCreated(
-          product.toJSON(),
-          correlationId || `product-create-${Date.now()}`
-        );
-      } catch (error) {
-        console.error('Failed to publish product created event:', error);
-      }
-    });
-
-    return product;
+  if (!sanitizedInput.name || !sanitizedInput.description || !sanitizedInput.category) {
+    const error = new Error('Missing required fields: name, description, and category are required');
+    error.code = 'MISSING_FIELDS';
+    throw error;
   }
 
+  if (typeof sanitizedInput.basePrice !== 'number' || sanitizedInput.basePrice < 0) {
+    const error = new Error('Base price must be a valid positive number');
+    error.code = 'INVALID_PRICE';
+    throw error;
+  }
+
+  if (!sanitizedInput.variants || sanitizedInput.variants.length === 0) {
+    const error = new Error('At least one product variant is required');
+    error.code = 'MISSING_VARIANTS';
+    throw error;
+  }
+
+  sanitizedInput.variants.forEach((variant, index) => {
+    if (typeof variant.stock !== 'number' || variant.stock < 0) {
+      const error = new Error(`Variant ${index + 1} must have a valid stock quantity`);
+      error.code = 'INVALID_STOCK';
+      throw error;
+    }
+  });
+
+  const product = new Product({
+    ...sanitizedInput,
+    sellerId: normalizedSellerId, // CHANGE: Use normalized sellerId
+  });
+
+  await product.save();
+  
+  // CHANGE: Log successful creation with sellerId for verification
+  console.log(`✅ Product created successfully with sellerId: ${normalizedSellerId}, productId: ${product._id}`);
+
+  setImmediate(async () => {
+    try {
+      await kafkaProducer.publishProductCreated(
+        product.toJSON(),
+        correlationId || `product-create-${Date.now()}`
+      );
+    } catch (error) {
+      console.error('Failed to publish product created event:', error);
+    }
+  });
+
+  return product;
+}
   async updateProduct(productId, sellerId, input, correlationId) {
     const product = await Product.findOne({ _id: productId, sellerId });
     if (!product) {

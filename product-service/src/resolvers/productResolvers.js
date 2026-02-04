@@ -38,15 +38,42 @@ const resolvers = {
 
     sellerProducts: async (_, __, context) => {
       try {
+        // CHANGE: Add detailed logging to debug authentication flow
+        console.log('🔍 sellerProducts resolver called');
+        console.log('📋 Context headers:', {
+          authorization: context.req?.headers?.authorization ? 'present' : 'missing',
+          internalToken: context.req?.headers['x-internal-gateway-token'] ? 'present' : 'missing',
+        });
+
         const user = await requireSeller(context);
         
+        // CHANGE: Validate user object before proceeding
+        if (!user || !user.userId) {
+          console.error('❌ Authentication returned invalid user object:', user);
+          throw new Error('Authentication failed: Invalid user data');
+        }
+
+        console.log('✅ Authenticated seller:', {
+          userId: user.userId,
+          role: user.role,
+          email: user.email,
+        });
+
         const response = await axios.get(`${API_BASE_URL}/seller/${user.userId}`, {
           headers: {
             'X-Correlation-ID': context.correlationId,
           },
         });
+        
+        console.log(`📦 Fetched ${response.data.length} products for seller ${user.userId}`);
         return response.data;
       } catch (error) {
+        // CHANGE: Enhanced error logging
+        console.error('❌ sellerProducts resolver error:', {
+          message: error.message,
+          response: error.response?.data,
+          stack: error.stack,
+        });
         throw new Error(error.response?.data?.message || error.message);
       }
     },
@@ -68,7 +95,18 @@ const resolvers = {
   Mutation: {
     createProduct: async (_, { input }, context) => {
       try {
+        // CHANGE: Add detailed logging for authentication
+        console.log('🔍 createProduct mutation called');
+        
         const user = await requireSeller(context);
+        
+        // CHANGE: Validate user object
+        if (!user || !user.userId) {
+          console.error('❌ Authentication returned invalid user object:', user);
+          throw new Error('Authentication failed: Invalid user data');
+        }
+
+        console.log('✅ Authenticated seller for product creation:', user.userId);
 
         const response = await axios.post(
           API_BASE_URL,
@@ -81,6 +119,7 @@ const resolvers = {
         );
         return response.data;
       } catch (error) {
+        console.error('❌ createProduct error:', error.message);
         throw new Error(error.response?.data?.message || error.message);
       }
     },
@@ -88,6 +127,12 @@ const resolvers = {
     updateProduct: async (_, { id, input }, context) => {
       try {
         const user = await requireSeller(context);
+
+        // CHANGE: Validate user object
+        if (!user || !user.userId) {
+          console.error('❌ Authentication returned invalid user object:', user);
+          throw new Error('Authentication failed: Invalid user data');
+        }
 
         const response = await axios.put(
           `${API_BASE_URL}/${id}`,
@@ -107,6 +152,12 @@ const resolvers = {
     deleteProduct: async (_, { id }, context) => {
       try {
         const user = await requireSeller(context);
+
+        // CHANGE: Validate user object
+        if (!user || !user.userId) {
+          console.error('❌ Authentication returned invalid user object:', user);
+          throw new Error('Authentication failed: Invalid user data');
+        }
 
         await axios.delete(`${API_BASE_URL}/${id}`, {
           data: { sellerId: user.userId },
@@ -149,9 +200,7 @@ const resolvers = {
   },
 
   Variant: {
-    // CHANGE: Removed parent() calls - access parent product from GraphQL info context
     effectiveDescription: (variant, _, __, info) => {
-      // CHANGE: Get parent product from the source object in GraphQL execution
       const product = info.path.prev && info.path.prev.key === 'variants' 
         ? info.path.prev.prev.result 
         : null;
@@ -160,7 +209,6 @@ const resolvers = {
     },
 
     effectiveImages: (variant, _, __, info) => {
-      // CHANGE: Get parent product from the source object in GraphQL execution
       const product = info.path.prev && info.path.prev.key === 'variants' 
         ? info.path.prev.prev.result 
         : null;
@@ -171,7 +219,6 @@ const resolvers = {
     },
 
     effectivePrice: (variant, _, __, info) => {
-      // CHANGE: Get parent product from the source object in GraphQL execution
       const product = info.path.prev && info.path.prev.key === 'variants' 
         ? info.path.prev.prev.result 
         : null;

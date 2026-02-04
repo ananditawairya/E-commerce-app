@@ -4,6 +4,8 @@
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const axios = require('axios');
 const { v4: uuidv4 } = require('uuid');
+const { createCircuitBreaker } = require('../utils/circuitBreaker');
+const { retryWithBackoff } = require('../utils/retryHelper');
 
 // Initialize Gemini client
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
@@ -14,67 +16,105 @@ const conversations = new Map();
 // Gateway URL for fetching products
 const GATEWAY_URL = process.env.GATEWAY_URL || 'http://localhost:4000';
 const PRODUCT_SERVICE_URL = process.env.PRODUCT_SERVICE_URL || 'http://localhost:4002/graphql';
+const PRODUCT_API_URL = process.env.PRODUCT_API_URL || 'http://localhost:4002/api//products'
 const INTERNAL_JWT_SECRET = process.env.INTERNAL_JWT_SECRET || 'internal-secret';
 
+const productServiceBreaker = createCircuitBreaker(
+    async (url, config) => {
+        return await axios.get(url, config);
+    },
+    {
+        name: 'product-service',
+        timeout: 10000,
+        errorThresholdPercentage: 50,
+        resetTimeout: 30000,
+    }
+);
+
+const geminiServiceBreaker = createCircuitBreaker(
+    async (chatSession, message) => {
+        return await chatSession.sendMessage(message);
+    },
+    {
+        name: 'gemini-api',
+        timeout: 15000, // Gemini can be slower
+        errorThresholdPercentage: 60,
+        resetTimeout: 60000, // Longer reset for external API
+    }
+);
+
+// CHANGE: Fallback for product service circuit breaker
+productServiceBreaker.fallback(() => {
+    console.warn('⚠️ Product service circuit open - returning empty catalog');
+    return { data: [] };
+});
+
+// CHANGE: Fallback for Gemini circuit breaker
+geminiServiceBreaker.fallback(() => {
+    throw new Error('AI service is temporarily unavailable. Please try again in a moment.');
+});
 /**
  * Fetch product catalog from the product service via gateway
  */
 const getProductCatalog = async () => {
     try {
-        const query = `
-            query GetProducts {
-                products(limit: 50) {
-                    id
-                    name
-                    description
-                    category
-                    basePrice
-                    images
-                    variants {
-                        id
-                        name
-                        priceModifier
-                        stock
+        // CHANGE: Use retry logic with circuit breaker
+        const response = await retryWithBackoff(
+            async () => {
+                return await productServiceBreaker.fire(
+                    PRODUCT_API_URL,
+                    {
+                        params: { limit: 50 },
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        timeout: 10000,
                     }
-                }
-            }
-        `;
-
-        const response = await axios.post(
-            PRODUCT_SERVICE_URL,
-            { query },
+                );
+            },
             {
-                headers: {
-                    'Content-Type': 'application/json',
-                    'x-internal-gateway-token': require('jsonwebtoken').sign(
-                        { service: 'ai-service' },
-                        INTERNAL_JWT_SECRET
-                    ),
+                maxRetries: 3,
+                initialDelay: 1000,
+                retryableErrors: ['ECONNREFUSED', 'ETIMEDOUT', 'ECONNABORTED', 503, 429],
+                onRetry: (attempt, error, delay) => {
+                    console.warn(`Retrying product catalog fetch (attempt ${attempt}): ${error.message}`);
                 },
-                timeout: 10000,
             }
         );
 
-        if (response.data.errors) {
-            console.error('GraphQL errors:', JSON.stringify(response.data.errors));
-            return [];
-        }
-
-        const products = response.data.data?.products || [];
-        console.log(`Fetched ${products.length} products for chatbot context`);
+        const products = response.data || [];
+        console.log(`✅ Fetched ${products.length} products for chatbot context`);
         return products;
     } catch (error) {
-        console.error('Failed to fetch products:', error.message);
+        console.error('❌ Failed to fetch products after retries:', error.message);
+
+        // CHANGE: Return empty array instead of throwing to allow chatbot to continue
         return [];
     }
 };
-
 /**
  * Build system prompt with product catalog context
  */
 const buildSystemPrompt = (products) => {
+    // CHANGE: Handle empty product catalog gracefully
+    if (!products || products.length === 0) {
+        return `You are a helpful AI shopping assistant for an e-commerce store. 
+
+Unfortunately, I'm currently unable to access the product catalog. Please let the customer know that the product information is temporarily unavailable, but you're happy to help them with general shopping questions or they can try again in a moment.
+
+Be apologetic and helpful, suggesting they:
+1. Try again in a few moments
+2. Browse the website directly
+3. Contact customer support if urgent
+
+Keep responses brief and empathetic.`;
+    }
+
     const productList = products.map(p => {
-        const variants = p.variants?.map(v => `${v.name}: $${v.effectivePrice}`).join(', ') || '';
+        const variants = p.variants?.map(v => {
+            const effectivePrice = p.basePrice + (v.priceModifier || 0);
+            return `${v.name}: $${effectivePrice.toFixed(2)}`;
+        }).join(', ') || '';
         return `- ${p.name} (ID: ${p.id}) - ${p.category} - $${p.basePrice}${variants ? ` | Variants: ${variants}` : ''}\n  ${p.description?.substring(0, 100) || 'No description'}`;
     }).join('\n');
 
@@ -164,9 +204,6 @@ const chat = async (userId, message, conversationId = null) => {
         // Build the system prompt
         const systemPrompt = buildSystemPrompt(conversation.products);
         console.log(`Sending prompt with ${conversation.products.length} products`);
-        if (conversation.products.length > 0) {
-            console.log(`First product: ${conversation.products[0].name}`);
-        }
 
         // Initialize Gemini model
         const model = genAI.getGenerativeModel({
@@ -185,9 +222,34 @@ const chat = async (userId, message, conversationId = null) => {
             history: history.slice(-10), // Keep last 10 messages for context
         });
 
-        // Send the message and get response
-        const result = await chatSession.sendMessage(message);
-        const aiResponse = result.response.text();
+        // CHANGE: Send message with retry and circuit breaker
+        let aiResponse;
+        try {
+            const result = await retryWithBackoff(
+                async () => {
+                    return await geminiServiceBreaker.fire(chatSession, message);
+                },
+                {
+                    maxRetries: 2, // Fewer retries for external API
+                    initialDelay: 2000,
+                    maxDelay: 8000,
+                    retryableErrors: ['ETIMEDOUT', 'ECONNABORTED', 503, 429],
+                    onRetry: (attempt, error, delay) => {
+                        console.warn(`Retrying Gemini API (attempt ${attempt}): ${error.message}`);
+                    },
+                }
+            );
+            aiResponse = result.response.text();
+        } catch (error) {
+            // CHANGE: Handle Gemini API failures gracefully
+            console.error('❌ Gemini API failed after retries:', error.message);
+
+            if (error.message?.includes('API key')) {
+                throw new Error('AI service configuration error. Please contact support.');
+            }
+
+            throw new Error('AI assistant is temporarily unavailable. Please try again in a moment.');
+        }
 
         // Add AI response to history
         conversation.messages.push({
@@ -216,13 +278,8 @@ const chat = async (userId, message, conversationId = null) => {
         };
 
     } catch (error) {
-        console.error('Chatbot error:', error);
-
-        if (error.message?.includes('API key')) {
-            throw new Error('Gemini API key is not configured. Please add GEMINI_API_KEY to your .env file.');
-        }
-
-        throw new Error(`Chat failed: ${error.message}`);
+        console.error('❌ Chatbot error:', error);
+        throw error;
     }
 };
 

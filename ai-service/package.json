@@ -18,7 +18,9 @@
     "mongoose": "^7.0.3",
     "@google/generative-ai": "^0.21.0",
     "jsonwebtoken": "^9.0.0",
-    "uuid": "^9.0.1"
+    "uuid": "^9.0.1",
+    "opossum": "^8.1.4",
+    "axios-retry": "^4.0.0"
   },
   "devDependencies": {
     "nodemon": "^2.0.22"
