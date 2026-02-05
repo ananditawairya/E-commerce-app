@@ -18,6 +18,12 @@ const { v4: uuidv4 } = require('uuid');
 
 const app = express();
 
+// Service base URLs (override via env for Kubernetes/production)
+const AUTH_SERVICE_URL = process.env.AUTH_SERVICE_URL || 'http://localhost:4001';
+const PRODUCT_SERVICE_URL = process.env.PRODUCT_SERVICE_URL || 'http://localhost:4002';
+const ORDER_SERVICE_URL = process.env.ORDER_SERVICE_URL || 'http://localhost:4003';
+const AI_SERVICE_URL = process.env.AI_SERVICE_URL || 'http://localhost:4004';
+
 // CHANGE: Security middleware
 app.use(helmet({
   contentSecurityPolicy: {
@@ -82,18 +88,18 @@ const graphqlLimiter = createRateLimiter(
 const conditionalRateLimiter = (req, res, next) => {
   const operationName = req.body?.operationName;
   const query = req.body?.query || '';
-  
+
   // CHANGE: Use higher limit for auth operations
-  const isAuthOperation = 
-    operationName === 'Login' || 
+  const isAuthOperation =
+    operationName === 'Login' ||
     operationName === 'Register' ||
     query.includes('mutation Login') ||
     query.includes('mutation Register');
-  
+
   if (isAuthOperation) {
     return authLimiter(req, res, next);
   }
-  
+
   return graphqlLimiter(req, res, next);
 };
 
@@ -120,27 +126,27 @@ const authenticateToken = async (req, res, next) => {
   // CHANGE: Extract operation name from GraphQL request
   const operationName = req.body?.operationName;
   const query = req.body?.query || '';
-  
+
   // CHANGE: List of operations that don't require authentication
   const publicOperations = ['Login', 'Register', 'IntrospectionQuery'];
-  
+
   // CHANGE: Check if this is a public operation by name or query content
-  const isPublicOperation = 
+  const isPublicOperation =
     publicOperations.includes(operationName) ||
     query.includes('mutation Login') ||
     query.includes('mutation Register') ||
     query.includes('__schema'); // Allow introspection queries
-  
+
   // CHANGE: Skip authentication for public operations
   if (isPublicOperation) {
     console.log(`⚠️  Skipping auth for public operation: ${operationName || 'unnamed'}`);
     return next();
   }
-  
+
   const authHeader = req.headers.authorization;
   const token = authHeader && authHeader.split(' ')[1];
 
-   if (!token) {
+  if (!token) {
     console.error('❌ No token provided for protected operation:', operationName);
     return res.status(401).json({ error: 'Access token required' });
   }
@@ -157,7 +163,7 @@ const authenticateToken = async (req, res, next) => {
       timeout: 5000,
     });
 
-   if (!response.ok) {
+    if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
       console.error('❌ Token verification failed:', {
         status: response.status,
@@ -175,9 +181,9 @@ const authenticateToken = async (req, res, next) => {
     }
 
     req.user = result;
-    console.log(`✅ Auth successful for ${operationName}:`, { 
-      userId: result.userId, 
-      role: result.role 
+    console.log(`✅ Auth successful for ${operationName}:`, {
+      userId: result.userId,
+      role: result.role
     });
     next();
   } catch (error) {
@@ -186,11 +192,11 @@ const authenticateToken = async (req, res, next) => {
       operation: operationName,
       code: error.code
     });
-    
+
     if (error.code === 'ECONNREFUSED') {
       return res.status(503).json({ error: 'Authentication service unavailable' });
     }
-    
+
     return res.status(500).json({ error: 'Authentication failed' });
   }
 };
@@ -198,7 +204,7 @@ const authenticateToken = async (req, res, next) => {
 // CHANGE: Request validation middleware - allow introspection in development
 const validateGraphQLRequest = (req, res, next) => {
   const { query, variables } = req.body;
-  
+
   if (!query) {
     return res.status(400).json({ error: 'GraphQL query is required' });
   }
@@ -209,7 +215,7 @@ const validateGraphQLRequest = (req, res, next) => {
 
   // CHANGE: Only block introspection in production environment
   const isDevelopment = process.env.NODE_ENV !== 'production';
-  
+
   if (!isDevelopment) {
     const dangerousPatterns = [
       /__schema/,
@@ -246,7 +252,7 @@ orderServiceBreaker.fallback(() => ({ error: 'Order service temporarily unavaila
 
 // CHANGE: Service call functions for circuit breakers
 async function callAuthService(path, options = {}) {
-  const response = await fetch(`http://localhost:4001${path}`, {
+  const response = await fetch(`${AUTH_SERVICE_URL}${path}`, {
     timeout: 10000,
     ...options
   });
@@ -254,7 +260,7 @@ async function callAuthService(path, options = {}) {
 }
 
 async function callProductService(path, options = {}) {
-  const response = await fetch(`http://localhost:4002${path}`, {
+  const response = await fetch(`${PRODUCT_SERVICE_URL}${path}`, {
     timeout: 10000,
     ...options
   });
@@ -262,7 +268,7 @@ async function callProductService(path, options = {}) {
 }
 
 async function callOrderService(path, options = {}) {
-  const response = await fetch(`http://localhost:4003${path}`, {
+  const response = await fetch(`${ORDER_SERVICE_URL}${path}`, {
     timeout: 10000,
     ...options
   });
@@ -355,7 +361,7 @@ app.get('/health', (req, res) => {
 const createExecutor = (url, serviceName) => {
   return async ({ document, variables, context }) => {
     const query = print(document);
-    
+
     // CHANGE: Generate internal gateway token
     const internalToken = jwt.sign(
       { service: 'gateway', timestamp: Date.now() },
@@ -363,7 +369,7 @@ const createExecutor = (url, serviceName) => {
       { expiresIn: '1h' }
     );
 
-       // CHANGE: Use separate headers for service auth and user auth
+    // CHANGE: Use separate headers for service auth and user auth
     const headers = {
       'Content-Type': 'application/json',
       'X-Correlation-ID': context?.correlationId || '',
@@ -388,9 +394,10 @@ const createExecutor = (url, serviceName) => {
 const startServer = async () => {
   console.log('🚀 Starting Enhanced GraphQL Gateway...\n');
 
-  const authExecutor = createExecutor('http://localhost:4001/graphql', 'auth');
-  const productExecutor = createExecutor('http://localhost:4002/graphql', 'product');
-  const orderExecutor = createExecutor('http://localhost:4003/graphql', 'order');
+  const authExecutor = createExecutor(`${AUTH_SERVICE_URL}/graphql`, 'auth');
+  const productExecutor = createExecutor(`${PRODUCT_SERVICE_URL}/graphql`, 'product');
+  const orderExecutor = createExecutor(`${ORDER_SERVICE_URL}/graphql`, 'order');
+  const aiExecutor = createExecutor(`${AI_SERVICE_URL}/graphql`, 'ai');
 
   console.log('📡 Introspecting schemas from services...');
 
@@ -450,7 +457,7 @@ const startServer = async () => {
     });
 
     await server.start();
-    
+
     // CHANGE: Apply middleware before GraphQL endpoint
     app.use('/graphql', conditionalRateLimiter, authenticateToken, validateGraphQLRequest);
     server.applyMiddleware({ app, path: '/graphql' });
@@ -480,14 +487,14 @@ const startServer = async () => {
   } catch (error) {
     console.error('\n❌ Gateway startup failed!');
     console.error('Error:', error.message);
-    
+
     if (error.code === 'ECONNREFUSED') {
       console.error('\n⚠️  Cannot connect to service. Make sure all services are running:');
       console.error('   1. cd backend/auth-service && npm run dev');
       console.error('   2. cd backend/product-service && npm run dev');
       console.error('   3. cd backend/order-service && npm run dev');
     }
-    
+
     process.exit(1);
   }
 };

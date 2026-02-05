@@ -164,7 +164,7 @@ const startServer = async () => {
     const PORT = process.env.PORT || 4002;
     
     // CHANGE: Bind to localhost only for security
-    const httpServer = app.listen(PORT, 'localhost', () => {
+    const httpServer = app.listen(PORT, '0.0.0.0', () => {
       console.log(`🚀 Product Service running on http://localhost:${PORT}`);
       console.log(`📡 REST API available at http://localhost:${PORT}/api/products`);
       console.log(`🔒 GraphQL endpoint secured at http://localhost:${PORT}${server.graphqlPath}`);

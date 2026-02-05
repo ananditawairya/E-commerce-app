@@ -1,2 +1,21 @@
 .vscode
 .slingshot
+
+# Dependencies
+**/node_modules/
+node_modules/
+**/node_modules/**
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Build artifacts
+dist/
+build/
+*.log
+
+# Environment variables
+.env
+.env.local
+.env.*.local
