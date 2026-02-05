@@ -75,13 +75,13 @@ const createRateLimiter = (windowMs, max, message) => {
 // CHANGE: Different rate limits for different endpoints
 const authLimiter = createRateLimiter(
   15 * 60 * 1000, // 15 minutes
-  50, // CHANGE: Increased from 10 to 50 attempts for development/testing
+  1000, // CHANGE: Increased to 1000 attempts for development/testing
   'Too many authentication attempts, please try again later.'
 );
 
 const graphqlLimiter = createRateLimiter(
   15 * 60 * 1000, // 15 minutes
-  100, // 100 requests
+  10000, // CHANGE: Increased to 10,000 requests for development/testing
   'Too many GraphQL requests, please try again later.'
 );
 
@@ -128,13 +128,20 @@ const authenticateToken = async (req, res, next) => {
   const query = req.body?.query || '';
 
   // CHANGE: List of operations that don't require authentication
-  const publicOperations = ['Login', 'Register', 'IntrospectionQuery'];
+  const publicOperations = ['Login', 'Register', 'IntrospectionQuery', 'SendChatMessage', 'sendChatMessage', 'GetProducts', 'products'];
+
 
   // CHANGE: Check if this is a public operation by name or query content
   const isPublicOperation =
     publicOperations.includes(operationName) ||
     query.includes('mutation Login') ||
     query.includes('mutation Register') ||
+    query.includes('mutation SendChatMessage') ||
+    query.includes('mutation sendChatMessage') ||
+    query.includes('sendChatMessage(') ||
+    query.includes('query GetProducts') ||
+    query.includes('query products') ||
+    query.includes('products(') ||
     query.includes('__schema'); // Allow introspection queries
 
   // CHANGE: Skip authentication for public operations
@@ -399,6 +406,7 @@ const startServer = async () => {
   const orderExecutor = createExecutor(`${ORDER_SERVICE_URL}/graphql`, 'order');
   const aiExecutor = createExecutor(`${AI_SERVICE_URL}/graphql`, 'ai');
 
+
   console.log('📡 Introspecting schemas from services...');
 
   try {
@@ -406,6 +414,7 @@ const startServer = async () => {
     const authSchema = await introspectSchema(authExecutor);
     const productSchema = await introspectSchema(productExecutor);
     const orderSchema = await introspectSchema(orderExecutor);
+    const aiSchema = await introspectSchema(aiExecutor);
 
     console.log('✅ Successfully introspected all service schemas');
 
@@ -423,6 +432,10 @@ const startServer = async () => {
         {
           schema: orderSchema,
           executor: orderExecutor,
+        },
+        {
+          schema: aiSchema,
+          executor: aiExecutor,
         },
       ],
     });

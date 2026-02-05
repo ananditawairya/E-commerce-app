@@ -14,6 +14,7 @@ const conversations = new Map();
 // Gateway URL for fetching products
 const GATEWAY_URL = process.env.GATEWAY_URL || 'http://localhost:4000';
 const PRODUCT_SERVICE_URL = process.env.PRODUCT_SERVICE_URL || 'http://localhost:4002';
+
 const INTERNAL_JWT_SECRET = process.env.INTERNAL_JWT_SECRET || 'internal-secret';
 
 /**
@@ -42,6 +43,7 @@ const getProductCatalog = async () => {
 
         const response = await axios.post(
             `${PRODUCT_SERVICE_URL}/graphql`,
+
             { query },
             {
                 headers: {
