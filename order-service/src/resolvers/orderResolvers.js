@@ -132,6 +132,25 @@ const resolvers = {
       }
     },
 
+    sellerAnalytics: async (_, { days }, context) => {
+      try {
+        const user = await requireSeller(context);
+
+        const response = await axios.get(
+          `${ORDERS_API_URL}/seller/${user.userId}/analytics`,
+          {
+            params: { days },
+            headers: {
+              'X-Correlation-ID': context.correlationId,
+            },
+          }
+        );
+        return response.data;
+      } catch (error) {
+        throw new Error(error.response?.data?.message || error.message);
+      }
+    },
+
     order: async (_, { id }, context) => {
       try {
         const user = await authenticate(context);

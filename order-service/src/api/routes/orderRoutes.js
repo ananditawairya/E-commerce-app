@@ -17,6 +17,7 @@ router.delete('/cart/:userId', orderController.clearCart);
 router.post('/orders/:userId', orderController.createOrder);
 router.get('/orders/buyer/:buyerId', orderController.getOrdersByBuyer);
 router.get('/orders/seller/:sellerId', orderController.getOrdersBySeller);
+router.get('/orders/seller/:sellerId/analytics', orderController.getSellerAnalytics);
 router.get('/orders/:id', orderController.getOrder);
 router.put('/orders/:id/status', orderController.updateOrderStatus);
 // CHANGE: Add cancel order endpoint

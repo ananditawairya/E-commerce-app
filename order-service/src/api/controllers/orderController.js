@@ -153,6 +153,20 @@ class OrderController {
     }
   }
 
+  async getSellerAnalytics(req, res, next) {
+    try {
+      const { sellerId } = req.params;
+      const { days } = req.query;
+
+      req.log.info({ sellerId, days }, 'Fetching seller analytics');
+
+      const analytics = await orderService.getSellerAnalytics(sellerId, days);
+      res.json(analytics);
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async getOrder(req, res, next) {
     try {
       const { id } = req.params;

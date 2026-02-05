@@ -258,6 +258,75 @@ async createOrder(userId, { items, totalAmount, shippingAddress }, correlationId
     return orders;
   }
 
+  async getSellerAnalytics(sellerId, days = 30) {
+    const safeDays = Math.max(1, Math.min(Number(days) || 30, 365));
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    start.setDate(start.getDate() - (safeDays - 1));
+
+    const match = {
+      'items.sellerId': sellerId,
+      createdAt: { $gte: start },
+    };
+
+    const totalsAgg = await Order.aggregate([
+      { $match: match },
+      {
+        $group: {
+          _id: null,
+          totalRevenue: { $sum: '$totalAmount' },
+          totalOrders: { $sum: 1 },
+        },
+      },
+    ]);
+
+    const statusAgg = await Order.aggregate([
+      { $match: match },
+      { $group: { _id: '$status', count: { $sum: 1 } } },
+    ]);
+
+    const trendAgg = await Order.aggregate([
+      { $match: match },
+      {
+        $group: {
+          _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
+          revenue: { $sum: '$totalAmount' },
+          orders: { $sum: 1 },
+        },
+      },
+      { $sort: { _id: 1 } },
+    ]);
+
+    const totals = totalsAgg[0] || { totalRevenue: 0, totalOrders: 0 };
+    const averageOrderValue = totals.totalOrders > 0
+      ? totals.totalRevenue / totals.totalOrders
+      : 0;
+
+    const statusMap = statusAgg.map(s => ({ status: s._id, count: s.count }));
+
+    const trendMap = new Map(trendAgg.map(t => [t._id, t]));
+    const trend = [];
+    for (let i = 0; i < safeDays; i++) {
+      const d = new Date(start);
+      d.setDate(start.getDate() + i);
+      const key = d.toISOString().slice(0, 10);
+      const point = trendMap.get(key);
+      trend.push({
+        date: key,
+        revenue: point ? point.revenue : 0,
+        orders: point ? point.orders : 0,
+      });
+    }
+
+    return {
+      totalRevenue: totals.totalRevenue,
+      totalOrders: totals.totalOrders,
+      averageOrderValue,
+      ordersByStatus: statusMap,
+      trend,
+    };
+  }
+
   async getOrderById(orderId) {
     const order = await Order.findById(orderId);
     if (!order) {

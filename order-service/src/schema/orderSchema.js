@@ -51,6 +51,25 @@ const typeDefs = gql`
     updatedAt: String!
   }
 
+  type AnalyticsPoint {
+    date: String!
+    revenue: Float!
+    orders: Int!
+  }
+
+  type SellerAnalytics {
+    totalRevenue: Float!
+    totalOrders: Int!
+    averageOrderValue: Float!
+    ordersByStatus: [StatusCount!]!
+    trend: [AnalyticsPoint!]!
+  }
+
+  type StatusCount {
+    status: String!
+    count: Int!
+  }
+
   input CartItemInput {
     productId: String!
     variantId: String
@@ -70,6 +89,7 @@ const typeDefs = gql`
     myCart: Cart
     myOrders: [Order!]!
     sellerOrders: [Order!]!
+    sellerAnalytics(days: Int): SellerAnalytics!
     order(id: ID!): Order
   }
 
