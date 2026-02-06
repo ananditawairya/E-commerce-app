@@ -6,12 +6,35 @@ const productService = require('../../services/productService');
 class ProductController {
   async getProducts(req, res, next) {
     try {
-      const { search, category, limit, offset } = req.query;
+      const {
+        search,
+        category,
+        minPrice,
+        maxPrice,
+        inStockOnly,
+        sortBy,
+        limit,
+        offset,
+      } = req.query;
+
+      const parsedLimit = Number.parseInt(limit, 10);
+      const parsedOffset = Number.parseInt(offset, 10);
+      const parsedMinPrice = Number.parseFloat(minPrice);
+      const parsedMaxPrice = Number.parseFloat(maxPrice);
+
+      let parsedInStockOnly;
+      if (inStockOnly === 'true') parsedInStockOnly = true;
+      if (inStockOnly === 'false') parsedInStockOnly = false;
+
       const products = await productService.getProducts({
         search,
         category,
-        limit: limit ? parseInt(limit) : 20,
-        offset: offset ? parseInt(offset) : 0,
+        minPrice: Number.isFinite(parsedMinPrice) ? parsedMinPrice : undefined,
+        maxPrice: Number.isFinite(parsedMaxPrice) ? parsedMaxPrice : undefined,
+        inStockOnly: parsedInStockOnly,
+        sortBy,
+        limit: Number.isFinite(parsedLimit) ? parsedLimit : 20,
+        offset: Number.isFinite(parsedOffset) ? parsedOffset : 0,
       });
       res.json(products);
     } catch (error) {

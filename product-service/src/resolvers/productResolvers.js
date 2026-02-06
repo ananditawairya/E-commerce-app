@@ -9,10 +9,43 @@ const API_BASE_URL = process.env.PRODUCT_API_URL || 'http://localhost:4002/api/p
 
 const resolvers = {
   Query: {
-    products: async (_, { search, category, limit = 20, offset = 0 }, context) => {
+    products: async (
+      _,
+      {
+        search,
+        category,
+        minPrice,
+        maxPrice,
+        inStockOnly,
+        sortBy,
+        limit = 20,
+        offset = 0,
+      },
+      context
+    ) => {
       try {
+        const params = {
+          search,
+          category,
+          sortBy,
+          limit,
+          offset,
+        };
+
+        if (typeof minPrice === 'number') {
+          params.minPrice = minPrice;
+        }
+
+        if (typeof maxPrice === 'number') {
+          params.maxPrice = maxPrice;
+        }
+
+        if (typeof inStockOnly === 'boolean') {
+          params.inStockOnly = inStockOnly;
+        }
+
         const response = await axios.get(API_BASE_URL, {
-          params: { search, category, limit, offset },
+          params,
           headers: {
             'X-Correlation-ID': context.correlationId,
           },

@@ -31,6 +31,15 @@ const typeDefs = gql`
     updatedAt: String!
   }
 
+  enum ProductSortBy {
+    RELEVANCE
+    NEWEST
+    PRICE_LOW_TO_HIGH
+    PRICE_HIGH_TO_LOW
+    NAME_A_TO_Z
+    NAME_Z_TO_A
+  }
+
   input VariantInput {
     name: String!
     description: String
@@ -60,7 +69,16 @@ const typeDefs = gql`
   }
 
   type Query {
-    products(search: String, category: String, limit: Int, offset: Int): [Product!]!
+    products(
+      search: String
+      category: String
+      minPrice: Float
+      maxPrice: Float
+      inStockOnly: Boolean
+      sortBy: ProductSortBy
+      limit: Int
+      offset: Int
+    ): [Product!]!
     product(id: ID!): Product
     sellerProducts: [Product!]!
     categories: [String!]!

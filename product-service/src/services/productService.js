@@ -4,21 +4,96 @@ const kafkaProducer = require('../kafka/kafkaProducer');
 const { v4: uuidv4 } = require('uuid');
 
 class ProductService {
-  async getProducts({ search, category, limit = 20, offset = 0 }) {
+  async getProducts({
+    search,
+    category,
+    minPrice,
+    maxPrice,
+    inStockOnly,
+    sortBy,
+    limit = 20,
+    offset = 0,
+  }) {
     const query = { isActive: true };
 
-    if (search) {
-      query.$text = { $search: search };
+    const normalizedSearch = typeof search === 'string' ? search.trim() : '';
+    const normalizedCategory = typeof category === 'string' ? category.trim() : '';
+    const normalizedLimit = Number.isFinite(limit) ? Math.min(Math.max(limit, 1), 50) : 20;
+    const normalizedOffset = Number.isFinite(offset) ? Math.max(offset, 0) : 0;
+
+    if (normalizedSearch) {
+      query.$text = { $search: normalizedSearch };
     }
 
-    if (category) {
-      query.category = category;
+    if (normalizedCategory) {
+      query.category = normalizedCategory;
     }
 
-    const products = await Product.find(query)
-      .limit(limit)
-      .skip(offset)
-      .sort({ createdAt: -1 });
+    if (typeof inStockOnly === 'boolean' && inStockOnly) {
+      query['variants.stock'] = { $gt: 0 };
+    }
+
+    const hasMinPrice = Number.isFinite(minPrice);
+    const hasMaxPrice = Number.isFinite(maxPrice);
+    if (hasMinPrice || hasMaxPrice) {
+      let safeMin = hasMinPrice ? Math.max(minPrice, 0) : undefined;
+      let safeMax = hasMaxPrice ? Math.max(maxPrice, 0) : undefined;
+
+      if (hasMinPrice && hasMaxPrice && safeMin > safeMax) {
+        [safeMin, safeMax] = [safeMax, safeMin];
+      }
+
+      query.basePrice = {};
+      if (Number.isFinite(safeMin)) query.basePrice.$gte = safeMin;
+      if (Number.isFinite(safeMax)) query.basePrice.$lte = safeMax;
+    }
+
+    const resolvedSortBy = sortBy || (normalizedSearch ? 'RELEVANCE' : 'NEWEST');
+    let sortConfig = { createdAt: -1 };
+    let useCaseInsensitiveCollation = false;
+    let useTextScoreProjection = false;
+
+    switch (resolvedSortBy) {
+      case 'RELEVANCE':
+        if (query.$text) {
+          sortConfig = { score: { $meta: 'textScore' }, createdAt: -1 };
+          useTextScoreProjection = true;
+        }
+        break;
+      case 'PRICE_LOW_TO_HIGH':
+        sortConfig = { basePrice: 1, createdAt: -1 };
+        break;
+      case 'PRICE_HIGH_TO_LOW':
+        sortConfig = { basePrice: -1, createdAt: -1 };
+        break;
+      case 'NAME_A_TO_Z':
+        sortConfig = { name: 1, createdAt: -1 };
+        useCaseInsensitiveCollation = true;
+        break;
+      case 'NAME_Z_TO_A':
+        sortConfig = { name: -1, createdAt: -1 };
+        useCaseInsensitiveCollation = true;
+        break;
+      case 'NEWEST':
+      default:
+        sortConfig = { createdAt: -1 };
+        break;
+    }
+
+    let productQuery = useTextScoreProjection
+      ? Product.find(query, { score: { $meta: 'textScore' } })
+      : Product.find(query);
+
+    productQuery = productQuery
+      .sort(sortConfig)
+      .limit(normalizedLimit)
+      .skip(normalizedOffset);
+
+    if (useCaseInsensitiveCollation) {
+      productQuery = productQuery.collation({ locale: 'en', strength: 2 });
+    }
+
+    const products = await productQuery;
 
     return products;
   }
@@ -41,7 +116,9 @@ class ProductService {
 
   async getCategories() {
     const categories = await Product.distinct('category');
-    return categories;
+    return categories
+      .filter((value) => typeof value === 'string' && value.trim())
+      .sort((a, b) => a.localeCompare(b));
   }
 
   async createProduct(sellerId, input, correlationId) {
