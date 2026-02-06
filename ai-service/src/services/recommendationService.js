@@ -3,28 +3,72 @@
 
 const UserBehavior = require('../models/UserBehavior');
 const ProductScore = require('../models/ProductScore');
-const axios = require('axios');
 
-const PRODUCT_API_URL = process.env.PRODUCT_API_URL || 'http://localhost:4002/api/products';
+const VALID_EVENT_TYPES = new Set([
+    'view',
+    'purchase',
+    'cart_add',
+    'cart_remove',
+    'wishlist',
+    'search',
+]);
+
+const EVENT_TYPE_ALIASES = {
+    add_to_cart: 'cart_add',
+    remove_from_cart: 'cart_remove',
+    cartadded: 'cart_add',
+    cartremoved: 'cart_remove',
+};
 
 class RecommendationService {
+    normalizeEventType(eventType) {
+        if (typeof eventType !== 'string') {
+            return null;
+        }
+
+        const normalized = eventType.trim().toLowerCase();
+        if (!normalized) {
+            return null;
+        }
+
+        return EVENT_TYPE_ALIASES[normalized] || normalized;
+    }
+
+    isValidEventType(eventType) {
+        return VALID_EVENT_TYPES.has(eventType);
+    }
+
+    getValidEventTypes() {
+        return Array.from(VALID_EVENT_TYPES);
+    }
+
     /**
      * Track a user behavior event
      */
     async trackEvent(userId, productId, eventType, category = null, metadata = {}) {
         try {
+            const normalizedEventType = this.normalizeEventType(eventType);
+
+            if (!this.isValidEventType(normalizedEventType)) {
+                const error = new Error(
+                    `Invalid eventType "${eventType}". Valid types: ${this.getValidEventTypes().join(', ')}`
+                );
+                error.code = 'INVALID_EVENT_TYPE';
+                throw error;
+            }
+
             // Save behavior event
             const behavior = new UserBehavior({
                 userId,
                 productId,
-                eventType,
+                eventType: normalizedEventType,
                 category,
                 metadata,
             });
             await behavior.save();
 
             // Update product scores
-            await this.updateProductScore(productId, eventType, category);
+            await this.updateProductScore(productId, normalizedEventType, category);
 
             return true;
         } catch (error) {

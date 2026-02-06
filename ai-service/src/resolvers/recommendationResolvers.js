@@ -85,13 +85,26 @@ const resolvers = {
                 context.log?.info({ userId, messageLength: message.length }, 'Processing chat message');
 
                 const response = await chatbotService.chat(userId, message, conversationId);
+                const normalizedResponse = {
+                    ...response,
+                    appliedFilters: Array.isArray(response.appliedFilters) ? response.appliedFilters : [],
+                    followUpQuestion: response.followUpQuestion || null,
+                    latencyMs: typeof response.latencyMs === 'number' ? response.latencyMs : null,
+                    cacheHit: Boolean(response.cacheHit),
+                    safetyBlocked: Boolean(response.safetyBlocked),
+                    semanticUsed: Boolean(response.semanticUsed),
+                };
 
                 context.log?.info({
-                    conversationId: response.conversationId,
-                    productsRecommended: response.products.length
+                    conversationId: normalizedResponse.conversationId,
+                    productsRecommended: normalizedResponse.products.length,
+                    latencyMs: normalizedResponse.latencyMs,
+                    cacheHit: normalizedResponse.cacheHit,
+                    safetyBlocked: normalizedResponse.safetyBlocked,
+                    semanticUsed: normalizedResponse.semanticUsed,
                 }, 'Chat response generated');
 
-                return response;
+                return normalizedResponse;
             } catch (error) {
                 context.log?.error({ error: error.message }, 'Error processing chat message');
                 throw new Error(`Chat failed: ${error.message}`);
@@ -101,4 +114,3 @@ const resolvers = {
 };
 
 module.exports = resolvers;
-

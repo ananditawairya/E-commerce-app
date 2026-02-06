@@ -5,7 +5,9 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
-    "dev": "nodemon src/index.js"
+    "dev": "nodemon src/index.js",
+    "eval:chat": "node scripts/evaluateChat.js",
+    "semantic:reindex": "node scripts/reindexSemanticCatalog.js"
   },
   "dependencies": {
     "apollo-server-express": "^3.12.0",

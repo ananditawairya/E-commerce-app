@@ -22,7 +22,7 @@ const userBehaviorSchema = new mongoose.Schema({
   eventType: {
     type: String,
     required: true,
-    enum: ['view', 'purchase', 'cart_add', 'wishlist', 'search'],
+    enum: ['view', 'purchase', 'cart_add', 'cart_remove', 'wishlist', 'search'],
     index: true,
   },
   category: {

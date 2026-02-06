@@ -1,8 +1,9 @@
 // ai-service/src/kafka/kafkaConsumer.js
-// Listen for events from other services
+// Listen for events from other services.
 
 const { Kafka, logLevel } = require('kafkajs');
 const recommendationService = require('../services/recommendationService');
+const semanticSearchService = require('../services/semanticSearchService');
 
 const kafka = new Kafka({
     clientId: 'ai-service',
@@ -16,7 +17,24 @@ const kafka = new Kafka({
 
 const consumer = kafka.consumer({ groupId: 'ai-service-group' });
 
+const SUBSCRIBED_TOPICS = [
+    'order.created',
+    'product.viewed',
+    'cart.updated',
+    'product.created',
+    'product.updated',
+    'product.stock.deducted',
+    'product.stock.restored',
+];
+
 let isConnected = false;
+
+const unwrapPayload = (rawEvent) => {
+    if (rawEvent && typeof rawEvent === 'object' && rawEvent.payload && typeof rawEvent.payload === 'object') {
+        return rawEvent.payload;
+    }
+    return rawEvent;
+};
 
 const start = async () => {
     try {
@@ -24,17 +42,19 @@ const start = async () => {
         isConnected = true;
         console.log('✅ AI Service Kafka consumer connected');
 
-        // Subscribe to relevant topics
         await consumer.subscribe({
-            topics: ['order.created', 'product.viewed', 'cart.updated'],
+            topics: SUBSCRIBED_TOPICS,
             fromBeginning: false,
         });
 
         await consumer.run({
-            eachMessage: async ({ topic, partition, message }) => {
+            eachMessage: async ({ topic, message }) => {
                 try {
-                    const data = JSON.parse(message.value.toString());
-                    console.log(`📥 Received event from ${topic}:`, JSON.stringify(data).substring(0, 100));
+                    const rawText = message.value?.toString?.() || '{}';
+                    const rawEvent = JSON.parse(rawText);
+                    const data = unwrapPayload(rawEvent);
+
+                    console.log(`📥 Received event from ${topic}:`, JSON.stringify(data).substring(0, 160));
 
                     switch (topic) {
                         case 'order.created':
@@ -46,9 +66,17 @@ const start = async () => {
                         case 'cart.updated':
                             await handleCartUpdated(data);
                             break;
+                        case 'product.created':
+                        case 'product.updated':
+                        case 'product.stock.deducted':
+                        case 'product.stock.restored':
+                            handleProductCatalogChanged(data, topic);
+                            break;
+                        default:
+                            break;
                     }
                 } catch (error) {
-                    console.error(`Error processing message from ${topic}:`, error);
+                    console.error(`Error processing message from ${topic}:`, error.message);
                 }
             },
         });
@@ -61,13 +89,14 @@ const start = async () => {
 };
 
 /**
- * Handle order.created events
- * Track purchase behavior for all items in the order
+ * Handle order.created events.
+ * Track purchase behavior for all items in the order.
  */
 const handleOrderCreated = async (data) => {
-    const { buyerId, items } = data;
+    const buyerId = data?.buyerId;
+    const items = Array.isArray(data?.items) ? data.items : [];
 
-    if (!buyerId || !items || !Array.isArray(items)) {
+    if (!buyerId || items.length === 0) {
         console.warn('Invalid order.created event data');
         return;
     }
@@ -87,7 +116,7 @@ const handleOrderCreated = async (data) => {
                 }
             );
         } catch (error) {
-            console.error('Error tracking purchase event:', error);
+            console.error('Error tracking purchase event:', error.message);
         }
     }
 
@@ -95,10 +124,10 @@ const handleOrderCreated = async (data) => {
 };
 
 /**
- * Handle product.viewed events
+ * Handle product.viewed events.
  */
 const handleProductViewed = async (data) => {
-    const { userId, productId, category } = data;
+    const { userId, productId, category } = data || {};
 
     if (!userId || !productId) {
         console.warn('Invalid product.viewed event data');
@@ -115,22 +144,21 @@ const handleProductViewed = async (data) => {
         );
         console.log(`✅ Tracked view event for product ${productId}`);
     } catch (error) {
-        console.error('Error tracking view event:', error);
+        console.error('Error tracking view event:', error.message);
     }
 };
 
 /**
- * Handle cart.updated events
+ * Handle cart.updated events.
  */
 const handleCartUpdated = async (data) => {
-    const { userId, productId, action, category } = data;
+    const { userId, productId, action, category } = data || {};
 
     if (!userId || !productId) {
         console.warn('Invalid cart.updated event data');
         return;
     }
 
-    // Only track add actions
     if (action !== 'add') {
         return;
     }
@@ -145,8 +173,16 @@ const handleCartUpdated = async (data) => {
         );
         console.log(`✅ Tracked cart_add event for product ${productId}`);
     } catch (error) {
-        console.error('Error tracking cart event:', error);
+        console.error('Error tracking cart event:', error.message);
     }
+};
+
+/**
+ * Handle catalog-change events to keep semantic index fresh.
+ */
+const handleProductCatalogChanged = (data, topic) => {
+    const productId = data?.productId || data?.id || 'unknown';
+    semanticSearchService.scheduleReindex(`${topic}:${productId}`);
 };
 
 const disconnect = async () => {

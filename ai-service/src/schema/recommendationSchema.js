@@ -37,6 +37,12 @@ const typeDefs = gql`
     message: String!
     products: [ChatProduct!]!
     conversationId: String!
+    followUpQuestion: String
+    appliedFilters: [String!]!
+    latencyMs: Int
+    cacheHit: Boolean!
+    safetyBlocked: Boolean!
+    semanticUsed: Boolean!
   }
 
   type Query {
@@ -73,4 +79,3 @@ const typeDefs = gql`
 `;
 
 module.exports = typeDefs;
-
