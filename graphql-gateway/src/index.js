@@ -160,7 +160,7 @@ const authenticateToken = async (req, res, next) => {
 
   try {
     // CHANGE: Verify token with auth service
-    const response = await fetch('http://localhost:4001/api/users/verify-token', {
+    const response = await fetch(`${AUTH_SERVICE_URL}/api/users/verify-token`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
