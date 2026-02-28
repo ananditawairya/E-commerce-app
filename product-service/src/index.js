@@ -15,24 +15,31 @@ const logger = require('./api/middleware/logger');
 const errorHandler = require('./api/middleware/errorHandler');
 const kafkaConsumer = require('./kafka/kafkaConsumer');
 const kafkaProducer = require('./kafka/kafkaProducer');
+const { createMetrics } = require('../../shared/metrics/metricsMiddleware');
+const promClient = require('prom-client');
 
 const app = express();
+
+// Prometheus metrics
+const { middleware: metricsMiddleware, endpoint: metricsEndpoint } = createMetrics(promClient, 'product-service');
+app.use(metricsMiddleware);
+app.get('/metrics', metricsEndpoint);
 
 // CHANGE: GraphQL Authentication Middleware to prevent direct access
 const graphqlAuthMiddleware = (req, res, next) => {
   const internalToken = req.headers['x-internal-gateway-token'];
-  
+
   // CHANGE: Verify internal gateway token for service-to-service auth
   if (!internalToken) {
-    return res.status(403).json({ 
-      error: 'Direct GraphQL access forbidden. Use API Gateway at http://localhost:4000/graphql' 
+    return res.status(403).json({
+      error: 'Direct GraphQL access forbidden. Use API Gateway at http://localhost:4000/graphql'
     });
   }
-  
+
   try {
     // CHANGE: Verify internal gateway token
     jwt.verify(internalToken, process.env.INTERNAL_JWT_SECRET || 'internal-secret');
-    
+
     // CHANGE: Allow request to proceed - user auth will be handled by resolvers
     next();
   } catch (error) {
@@ -58,8 +65,8 @@ app.use(errorHandler);
 
 // CHANGE: Health check endpoint for gateway monitoring
 app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'healthy', 
+  res.json({
+    status: 'healthy',
     service: 'product-service',
     timestamp: new Date().toISOString()
   });
@@ -82,7 +89,7 @@ const connectDB = async () => {
 // Graceful shutdown handler
 const gracefulShutdown = async (signal) => {
   console.log(`\n${signal} received, shutting down gracefully...`);
-  
+
   try {
     await kafkaProducer.disconnect();
     await kafkaConsumer.disconnect();
@@ -102,16 +109,16 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 const startServer = async () => {
   try {
     await connectDB();
-    
+
     try {
       await kafkaProducer.connect();
     } catch (error) {
       console.warn('⚠️  Kafka producer connection failed, continuing without events:', error.message);
     }
-    
+
     // CHANGE: Enable introspection in development for gateway schema stitching
     const isDevelopment = process.env.NODE_ENV !== 'production';
-    
+
     const server = new ApolloServer({
       typeDefs,
       resolvers,
@@ -119,7 +126,7 @@ const startServer = async () => {
       playground: false,   // CHANGE: Keep playground disabled for security
       context: ({ req }) => {
         const correlationId = req.correlationId || req.headers['x-correlation-id'] || 'unknown';
-        
+
         const log = req.log || {
           info: (data, message) => {
             console.log(JSON.stringify({
@@ -156,13 +163,13 @@ const startServer = async () => {
     });
 
     await server.start();
-    
+
     // CHANGE: Apply auth middleware before GraphQL endpoint
     app.use('/graphql', graphqlAuthMiddleware);
     server.applyMiddleware({ app, path: '/graphql' });
 
     const PORT = process.env.PORT || 4002;
-    
+
     // CHANGE: Bind to localhost only for security
     const httpServer = app.listen(PORT, '0.0.0.0', () => {
       console.log(`🚀 Product Service running on http://localhost:${PORT}`);
@@ -173,7 +180,7 @@ const startServer = async () => {
       if (isDevelopment) {
         console.log(`🔍 Introspection enabled for gateway schema stitching`);
       }
-      
+
       // Start Kafka consumer AFTER server is listening (non-blocking)
       setImmediate(async () => {
         try {

@@ -15,8 +15,15 @@ const errorHandler = require('./api/middleware/errorHandler');
 const kafkaConsumer = require('./kafka/kafkaConsumer');
 const cacheService = require('./services/cacheService');
 const semanticSearchService = require('./services/semanticSearchService');
+const { createMetrics } = require('../../shared/metrics/metricsMiddleware');
+const promClient = require('prom-client');
 
 const app = express();
+
+// Prometheus metrics
+const { middleware: metricsMiddleware, endpoint: metricsEndpoint } = createMetrics(promClient, 'ai-service');
+app.use(metricsMiddleware);
+app.get('/metrics', metricsEndpoint);
 const isDevelopment = process.env.NODE_ENV !== 'production';
 
 const CHAT_RATE_LIMIT_WINDOW_MS = Number.parseInt(

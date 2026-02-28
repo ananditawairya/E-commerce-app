@@ -1,0 +1,277 @@
+{
+    "annotations": {
+        "list": []
+    },
+    "editable": true,
+    "fiscalYearStartMonth": 0,
+    "graphTooltip": 1,
+    "id": null,
+    "links": [],
+    "panels": [
+        {
+            "title": "Request Rate (req/s) by Service",
+            "type": "timeseries",
+            "gridPos": {
+                "h": 8,
+                "w": 12,
+                "x": 0,
+                "y": 0
+            },
+            "datasource": {
+                "type": "prometheus",
+                "uid": ""
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "reqps"
+                },
+                "overrides": []
+            },
+            "targets": [
+                {
+                    "expr": "sum(rate(ecom_http_requests_total[1m])) by (service)",
+                    "legendFormat": "{{ service }}"
+                }
+            ]
+        },
+        {
+            "title": "Error Rate (5xx) by Service",
+            "type": "timeseries",
+            "gridPos": {
+                "h": 8,
+                "w": 12,
+                "x": 12,
+                "y": 0
+            },
+            "datasource": {
+                "type": "prometheus",
+                "uid": ""
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "reqps",
+                    "color": {
+                        "mode": "palette-classic"
+                    }
+                },
+                "overrides": []
+            },
+            "targets": [
+                {
+                    "expr": "sum(rate(ecom_http_requests_total{status_code=~\"5..\"}[1m])) by (service)",
+                    "legendFormat": "{{ service }} 5xx"
+                }
+            ]
+        },
+        {
+            "title": "Response Time p95 (seconds)",
+            "type": "timeseries",
+            "gridPos": {
+                "h": 8,
+                "w": 12,
+                "x": 0,
+                "y": 8
+            },
+            "datasource": {
+                "type": "prometheus",
+                "uid": ""
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "s"
+                },
+                "overrides": []
+            },
+            "targets": [
+                {
+                    "expr": "histogram_quantile(0.95, sum(rate(ecom_http_request_duration_seconds_bucket[5m])) by (le, service))",
+                    "legendFormat": "{{ service }} p95"
+                }
+            ]
+        },
+        {
+            "title": "Response Time p50 (seconds)",
+            "type": "timeseries",
+            "gridPos": {
+                "h": 8,
+                "w": 12,
+                "x": 12,
+                "y": 8
+            },
+            "datasource": {
+                "type": "prometheus",
+                "uid": ""
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "s"
+                },
+                "overrides": []
+            },
+            "targets": [
+                {
+                    "expr": "histogram_quantile(0.50, sum(rate(ecom_http_request_duration_seconds_bucket[5m])) by (le, service))",
+                    "legendFormat": "{{ service }} p50"
+                }
+            ]
+        },
+        {
+            "title": "Active Requests",
+            "type": "gauge",
+            "gridPos": {
+                "h": 6,
+                "w": 12,
+                "x": 0,
+                "y": 16
+            },
+            "datasource": {
+                "type": "prometheus",
+                "uid": ""
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "thresholds": {
+                        "steps": [
+                            {
+                                "color": "green",
+                                "value": null
+                            },
+                            {
+                                "color": "yellow",
+                                "value": 50
+                            },
+                            {
+                                "color": "red",
+                                "value": 100
+                            }
+                        ]
+                    }
+                },
+                "overrides": []
+            },
+            "targets": [
+                {
+                    "expr": "ecom_http_active_requests",
+                    "legendFormat": "{{ service }}"
+                }
+            ]
+        },
+        {
+            "title": "Memory Usage (MB)",
+            "type": "timeseries",
+            "gridPos": {
+                "h": 6,
+                "w": 12,
+                "x": 12,
+                "y": 16
+            },
+            "datasource": {
+                "type": "prometheus",
+                "uid": ""
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "decmbytes"
+                },
+                "overrides": []
+            },
+            "targets": [
+                {
+                    "expr": "ecom_process_resident_memory_bytes / 1024 / 1024",
+                    "legendFormat": "{{ job }}"
+                }
+            ]
+        },
+        {
+            "title": "Total Requests by Status Code",
+            "type": "stat",
+            "gridPos": {
+                "h": 6,
+                "w": 24,
+                "x": 0,
+                "y": 22
+            },
+            "datasource": {
+                "type": "prometheus",
+                "uid": ""
+            },
+            "fieldConfig": {
+                "defaults": {},
+                "overrides": []
+            },
+            "targets": [
+                {
+                    "expr": "sum(ecom_http_requests_total) by (status_code)",
+                    "legendFormat": "HTTP {{ status_code }}"
+                }
+            ]
+        },
+        {
+            "title": "Event Loop Lag (seconds)",
+            "type": "timeseries",
+            "gridPos": {
+                "h": 6,
+                "w": 12,
+                "x": 0,
+                "y": 28
+            },
+            "datasource": {
+                "type": "prometheus",
+                "uid": ""
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "s"
+                },
+                "overrides": []
+            },
+            "targets": [
+                {
+                    "expr": "ecom_nodejs_eventloop_lag_seconds",
+                    "legendFormat": "{{ job }}"
+                }
+            ]
+        },
+        {
+            "title": "CPU Usage (%)",
+            "type": "timeseries",
+            "gridPos": {
+                "h": 6,
+                "w": 12,
+                "x": 12,
+                "y": 28
+            },
+            "datasource": {
+                "type": "prometheus",
+                "uid": ""
+            },
+            "fieldConfig": {
+                "defaults": {
+                    "unit": "percent"
+                },
+                "overrides": []
+            },
+            "targets": [
+                {
+                    "expr": "rate(ecom_process_cpu_seconds_total[1m]) * 100",
+                    "legendFormat": "{{ job }}"
+                }
+            ]
+        }
+    ],
+    "schemaVersion": 39,
+    "tags": [
+        "ecommerce",
+        "microservices"
+    ],
+    "templating": {
+        "list": []
+    },
+    "time": {
+        "from": "now-1h",
+        "to": "now"
+    },
+    "title": "E-Commerce Platform Overview",
+    "uid": "ecom-overview",
+    "version": 1
+}

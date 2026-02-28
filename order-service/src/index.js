@@ -15,24 +15,31 @@ const logger = require('./api/middleware/logger');
 const errorHandler = require('./api/middleware/errorHandler');
 const kafkaProducer = require('./kafka/kafkaProducer');
 const { initializeSagaCoordinator } = require('./services/orderService');
+const { createMetrics } = require('../../shared/metrics/metricsMiddleware');
+const promClient = require('prom-client');
 
 const app = express();
+
+// Prometheus metrics
+const { middleware: metricsMiddleware, endpoint: metricsEndpoint } = createMetrics(promClient, 'order-service');
+app.use(metricsMiddleware);
+app.get('/metrics', metricsEndpoint);
 
 // CHANGE: GraphQL Authentication Middleware to prevent direct access
 const graphqlAuthMiddleware = (req, res, next) => {
   const internalToken = req.headers['x-internal-gateway-token'];
-  
+
   // CHANGE: Verify internal gateway token for service-to-service auth
   if (!internalToken) {
-    return res.status(403).json({ 
-      error: 'Direct GraphQL access forbidden. Use API Gateway at http://localhost:4000/graphql' 
+    return res.status(403).json({
+      error: 'Direct GraphQL access forbidden. Use API Gateway at http://localhost:4000/graphql'
     });
   }
-  
+
   try {
     // CHANGE: Verify internal gateway token
     jwt.verify(internalToken, process.env.INTERNAL_JWT_SECRET || 'internal-secret');
-    
+
     // CHANGE: Allow request to proceed - user auth will be handled by resolvers
     next();
   } catch (error) {
@@ -57,8 +64,8 @@ app.use(errorHandler);
 
 // CHANGE: Health check endpoint for gateway monitoring
 app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'healthy', 
+  res.json({
+    status: 'healthy',
     service: 'order-service',
     timestamp: new Date().toISOString()
   });
@@ -68,7 +75,7 @@ app.get('/health', (req, res) => {
 const connectDB = async () => {
   const maxRetries = 5;
   let retryCount = 0;
-  
+
   while (retryCount < maxRetries) {
     try {
       await mongoose.connect(process.env.MONGODB_URI, {
@@ -77,19 +84,19 @@ const connectDB = async () => {
         serverSelectionTimeoutMS: 30000,
         socketTimeoutMS: 45000,
       });
-      
+
       await mongoose.connection.asPromise();
       console.log('✅ MongoDB connected - Order Service');
       return;
     } catch (error) {
       retryCount++;
       console.error(`❌ MongoDB connection attempt ${retryCount}/${maxRetries} failed:`, error.message);
-      
+
       if (retryCount >= maxRetries) {
         console.error('❌ MongoDB connection failed after maximum retries');
         process.exit(1);
       }
-      
+
       const delay = Math.min(1000 * Math.pow(2, retryCount), 10000);
       console.log(`⏳ Retrying in ${delay}ms...`);
       await new Promise(resolve => setTimeout(resolve, delay));
@@ -99,7 +106,7 @@ const connectDB = async () => {
 
 const gracefulShutdown = async (signal) => {
   console.log(`\n${signal} received, shutting down gracefully...`);
-  
+
   try {
     await kafkaProducer.disconnect();
     await mongoose.connection.close();
@@ -117,7 +124,7 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 // Start server
 const startServer = async () => {
   await connectDB();
-  
+
   try {
     await initializeSagaCoordinator();
     console.log('✅ Saga coordinator initialized');
@@ -125,16 +132,16 @@ const startServer = async () => {
     console.error('❌ Saga coordinator initialization failed:', error.message);
     process.exit(1);
   }
-  
+
   try {
     await kafkaProducer.connect();
   } catch (error) {
     console.warn('⚠️  Kafka connection failed, continuing without events:', error.message);
   }
-  
+
   // CHANGE: Enable introspection in development for gateway schema stitching
   const isDevelopment = process.env.NODE_ENV !== 'production';
-  
+
   // Apollo Server
   const server = new ApolloServer({
     typeDefs,
@@ -147,15 +154,15 @@ const startServer = async () => {
       log: req.log,
     }),
   });
-  
+
   await server.start();
-  
+
   // CHANGE: Apply auth middleware before GraphQL endpoint
   app.use('/graphql', graphqlAuthMiddleware);
   server.applyMiddleware({ app, path: '/graphql' });
 
   const PORT = process.env.PORT || 4003;
-  
+
   // CHANGE: Bind to localhost only for security
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Order Service running on http://localhost:${PORT}`);

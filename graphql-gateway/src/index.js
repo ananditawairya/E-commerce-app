@@ -15,8 +15,15 @@ const helmet = require('helmet');
 const jwt = require('jsonwebtoken');
 const CircuitBreaker = require('opossum');
 const { v4: uuidv4 } = require('uuid');
+const { createMetrics } = require('../../shared/metrics/metricsMiddleware');
+const promClient = require('prom-client');
 
 const app = express();
+
+// Prometheus metrics
+const { middleware: metricsMiddleware, endpoint: metricsEndpoint } = createMetrics(promClient, 'graphql-gateway');
+app.use(metricsMiddleware);
+app.get('/metrics', metricsEndpoint);
 
 // Service base URLs (override via env for Kubernetes/production)
 const AUTH_SERVICE_URL = process.env.AUTH_SERVICE_URL || 'http://localhost:4001';

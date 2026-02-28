@@ -16,24 +16,31 @@ const errorHandler = require('./api/middleware/errorHandler');
 const kafkaProducer = require('./kafka/kafkaProducer');
 const cacheService = require('./services/cacheService');
 const { appLogger, getLoggingConfig } = require('./utils/logger');
+const { createMetrics } = require('../../shared/metrics/metricsMiddleware');
+const promClient = require('prom-client');
 
 const app = express();
+
+// Prometheus metrics
+const { middleware: metricsMiddleware, endpoint: metricsEndpoint } = createMetrics(promClient, 'auth-service');
+app.use(metricsMiddleware);
+app.get('/metrics', metricsEndpoint);
 
 // CHANGE: GraphQL Authentication Middleware to prevent direct access
 const graphqlAuthMiddleware = (req, res, next) => {
   const internalToken = req.headers['x-internal-gateway-token'];
-  
+
   // CHANGE: Verify internal gateway token for service-to-service auth
   if (!internalToken) {
-    return res.status(403).json({ 
-      error: 'Direct GraphQL access forbidden. Use API Gateway at http://localhost:4000/graphql' 
+    return res.status(403).json({
+      error: 'Direct GraphQL access forbidden. Use API Gateway at http://localhost:4000/graphql'
     });
   }
-  
+
   try {
     // CHANGE: Verify internal gateway token
     jwt.verify(internalToken, process.env.INTERNAL_JWT_SECRET || 'internal-secret');
-    
+
     // CHANGE: Allow request to proceed - user auth will be handled by resolvers
     next();
   } catch (error) {
@@ -60,8 +67,8 @@ app.use(errorHandler);
 
 // CHANGE: Health check endpoint for gateway monitoring
 app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'healthy', 
+  res.json({
+    status: 'healthy',
     service: 'auth-service',
     cacheMode: cacheService.getMode(),
     logging: getLoggingConfig(),
@@ -101,7 +108,7 @@ const connectDB = async () => {
 
 const gracefulShutdown = async (signal) => {
   appLogger.info({ signal }, 'Shutdown signal received');
-  
+
   try {
     await cacheService.disconnect();
     await kafkaProducer.disconnect();
@@ -121,21 +128,21 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 const startServer = async () => {
   await connectDB();
   await cacheService.connect();
-  
+
   try {
     await kafkaProducer.connect();
   } catch (error) {
     appLogger.warn({ error: error.message }, 'Kafka connection failed, continuing without events');
   }
-  
+
   await server.start();
-  
+
   // CHANGE: Apply auth middleware before GraphQL endpoint
   app.use('/graphql', graphqlAuthMiddleware);
   server.applyMiddleware({ app, path: '/graphql' });
 
   const PORT = process.env.PORT || 4001;
-  
+
   // CHANGE: Bind to localhost only for security
   app.listen(PORT, '0.0.0.0', () => {
     appLogger.info({
