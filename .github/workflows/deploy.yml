@@ -50,11 +50,11 @@ jobs:
             echo "  Deploying branch: $BRANCH"
             echo "═══════════════════════════════════════"
 
-            # Pull latest code
+            # Pull latest code (reset --hard handles force pushes)
             cd "$APP_DIR"
             git fetch origin
             git checkout "$BRANCH" 2>/dev/null || git checkout -b "$BRANCH" "origin/$BRANCH"
-            git pull origin "$BRANCH"
+            git reset --hard "origin/$BRANCH"
             echo "✅ Code updated"
 
             # Stop old containers, rebuild, and start
