@@ -1,0 +1,222 @@
+# ─────────────────────────────────────────────────────────────
+# E-Commerce Production Compose
+# Usage:  docker compose -f docker-compose.prod.yml up -d --build
+# ─────────────────────────────────────────────────────────────
+
+services:
+
+  # ── Infrastructure ────────────────────────────────────────
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    container_name: ecommerce-zookeeper
+    restart: unless-stopped
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper/data
+      - zookeeper_log:/var/lib/zookeeper/log
+    networks:
+      - ecommerce-network
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/2181'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: ecommerce-kafka
+    restart: unless-stopped
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    networks:
+      - ecommerce-network
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9093 > /dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+  mongodb:
+    image: mongo:7.0
+    container_name: ecommerce-mongodb
+    restart: unless-stopped
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - ecommerce-network
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Application Services ──────────────────────────────────
+  # App services depend on infra being healthy, but start in
+  # parallel with each other.  Each service has built-in retry
+  # logic for inter-service connectivity.
+
+  auth-service:
+    build:
+      context: .
+      dockerfile: auth-service/Dockerfile
+    container_name: auth-service
+    restart: unless-stopped
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      NODE_PATH: /app/auth-service/node_modules
+      PORT: 4001
+      MONGODB_URI: mongodb://mongodb:27017/auth_db
+      JWT_SECRET: ${JWT_SECRET:-your-super-secret-jwt-key-here}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-your-refresh-token-secret-here}
+      INTERNAL_JWT_SECRET: ${INTERNAL_JWT_SECRET:-your-internal-service-secret-here}
+      JWT_EXPIRE: 15m
+      JWT_REFRESH_EXPIRE: 7d
+      AUTH_API_URL: http://auth-service:4001/api/users
+      KAFKA_BROKERS: kafka:9093
+      KAFKA_LOG_LEVEL: ERROR
+      LOG_LEVEL: info
+      LOG_DESTINATION: console
+    networks:
+      - ecommerce-network
+
+  product-service:
+    build:
+      context: .
+      dockerfile: product-service/Dockerfile
+    container_name: product-service
+    restart: unless-stopped
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      NODE_PATH: /app/product-service/node_modules
+      PORT: 4002
+      MONGODB_URI: mongodb://mongodb:27017/product_db
+      PRODUCT_API_URL: http://product-service:4002/api/products
+      AUTH_API_URL: http://auth-service:4001/api/users
+      INTERNAL_JWT_SECRET: ${INTERNAL_JWT_SECRET:-your-internal-service-secret-here}
+      KAFKA_BROKERS: kafka:9093
+      KAFKA_LOG_LEVEL: ERROR
+    networks:
+      - ecommerce-network
+
+  order-service:
+    build:
+      context: .
+      dockerfile: order-service/Dockerfile
+    container_name: order-service
+    restart: unless-stopped
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      NODE_PATH: /app/order-service/node_modules
+      PORT: 4003
+      MONGODB_URI: mongodb://mongodb:27017/order_db
+      ORDER_API_URL: http://order-service:4003/api
+      PRODUCT_API_URL: http://product-service:4002/api/products
+      AUTH_API_URL: http://auth-service:4001/api/users
+      INTERNAL_JWT_SECRET: ${INTERNAL_JWT_SECRET:-your-internal-service-secret-here}
+      KAFKA_BROKERS: kafka:9093
+      KAFKA_LOG_LEVEL: ERROR
+    networks:
+      - ecommerce-network
+
+  ai-service:
+    build:
+      context: .
+      dockerfile: ai-service/Dockerfile
+    container_name: ai-service
+    restart: unless-stopped
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      NODE_PATH: /app/ai-service/node_modules
+      PORT: 4004
+      MONGODB_URI: mongodb://mongodb:27017/ai_service_db
+      PRODUCT_API_URL: http://product-service:4002/api/products
+      ORDER_API_URL: http://order-service:4003/api/orders
+      PRODUCT_SERVICE_URL: http://product-service:4002/graphql
+      INTERNAL_JWT_SECRET: ${INTERNAL_JWT_SECRET:-your-internal-service-secret-here}
+      JWT_SECRET: ${JWT_SECRET:-your-super-secret-jwt-key-here}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GATEWAY_URL: http://graphql-gateway:4000
+      KAFKA_BROKERS: kafka:9093
+      KAFKA_LOG_LEVEL: ERROR
+      DEFAULT_RECOMMENDATION_LIMIT: 10
+      TRENDING_WINDOW_DAYS: 7
+      AI_MODEL_TIMEOUT_MS: 4200
+      AI_SEMANTIC_ENABLED: "true"
+      AI_EMBEDDING_MODEL: text-embedding-004
+      AI_SEMANTIC_INDEX_ON_STARTUP: "true"
+    networks:
+      - ecommerce-network
+
+  graphql-gateway:
+    build:
+      context: .
+      dockerfile: graphql-gateway/Dockerfile
+    container_name: graphql-gateway
+    restart: unless-stopped
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    ports:
+      - "4000:4000"
+    environment:
+      NODE_ENV: development
+      PORT: 4000
+      AUTH_SERVICE_URL: http://auth-service:4001
+      PRODUCT_SERVICE_URL: http://product-service:4002
+      ORDER_SERVICE_URL: http://order-service:4003
+      AI_SERVICE_URL: http://ai-service:4004
+      INTERNAL_JWT_SECRET: ${INTERNAL_JWT_SECRET:-your-internal-service-secret-here}
+      JWT_SECRET: ${JWT_SECRET:-your-super-secret-jwt-key-here}
+    networks:
+      - ecommerce-network
+
+networks:
+  ecommerce-network:
+    driver: bridge
+
+volumes:
+  zookeeper_data:
+  zookeeper_log:
+  kafka_data:
+  mongodb_data:

@@ -1,0 +1,101 @@
+# ─────────────────────────────────────────────────────────────
+# CD — Deploy to EC2 via SSH
+# ─────────────────────────────────────────────────────────────
+name: CD — Deploy to EC2
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      skip_build:
+        description: "Skip Docker build (restart only)"
+        required: false
+        default: "false"
+        type: boolean
+      seed_db:
+        description: "Seed product database after deploy"
+        required: false
+        default: "false"
+        type: boolean
+
+# Only one deploy at a time
+concurrency:
+  group: deploy-ec2
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy to EC2
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          port: 22
+          command_timeout: 10m
+          script: |
+            set -euo pipefail
+
+            APP_DIR="/opt/ecom/app"
+            COMPOSE_FILE="docker-compose.prod.yml"
+            BRANCH="${{ github.ref_name }}"
+            HEALTH_URL="http://localhost:4000/health"
+
+            echo "═══════════════════════════════════════"
+            echo "  Deploying branch: $BRANCH"
+            echo "═══════════════════════════════════════"
+
+            # Pull latest code
+            cd "$APP_DIR"
+            git fetch origin
+            git checkout "$BRANCH" 2>/dev/null || git checkout -b "$BRANCH" "origin/$BRANCH"
+            git pull origin "$BRANCH"
+            echo "✅ Code updated"
+
+            # Stop old containers, rebuild, and start
+            if [ "${{ inputs.skip_build }}" = "true" ]; then
+              echo "⏭️  Restarting (skip-build mode)..."
+              docker compose -f "$COMPOSE_FILE" down
+              docker compose -f "$COMPOSE_FILE" up -d
+            else
+              echo "🔨 Building and starting..."
+              docker compose -f "$COMPOSE_FILE" down
+              docker compose -f "$COMPOSE_FILE" up -d --build
+            fi
+            echo "✅ Containers started"
+
+            # Health check with retries
+            echo "🩺 Waiting for health check..."
+            for i in $(seq 1 30); do
+              if curl -sf "$HEALTH_URL" > /dev/null 2>&1; then
+                echo "✅ Health check passed (attempt $i/30)"
+                break
+              fi
+              if [ "$i" -eq 30 ]; then
+                echo "❌ Health check failed after 30 attempts"
+                docker compose -f "$COMPOSE_FILE" logs --tail=50
+                exit 1
+              fi
+              sleep 5
+            done
+
+            # Optional: seed DB
+            if [ "${{ inputs.seed_db }}" = "true" ]; then
+              echo "🌱 Seeding product database..."
+              docker exec product-service node seed_products.js
+              PROD_COUNT=$(docker exec ecommerce-mongodb mongosh --quiet --eval \
+                'db.getSiblingDB("product_db").products.countDocuments()')
+              echo "✅ Seeded — $PROD_COUNT products"
+            fi
+
+            # Summary
+            echo ""
+            echo "═══════════════════════════════════════"
+            echo "  ✅ Deployment complete!"
+            echo "═══════════════════════════════════════"
+            docker compose -f "$COMPOSE_FILE" ps
