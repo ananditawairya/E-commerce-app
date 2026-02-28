@@ -1,44 +1,38 @@
-// backend/auth-service/src/api/middleware/logger.js
-// CHANGE: Centralized logging middleware with correlation IDs
-
-const { v4: uuidv4 } = require('uuid');
+const { randomUUID } = require('crypto');
+const { createRequestLogger } = require('../../utils/logger');
 
 const logger = (req, res, next) => {
-  // CHANGE: Generate or propagate correlation ID
-  const correlationId = req.headers['x-correlation-id'] || uuidv4();
+  const correlationId = req.headers['x-correlation-id'] || randomUUID();
+  const requestId = req.headers['x-request-id'] || randomUUID();
+  const startTime = process.hrtime.bigint();
+
   req.correlationId = correlationId;
+  req.requestId = requestId;
   res.setHeader('X-Correlation-ID', correlationId);
+  res.setHeader('X-Request-ID', requestId);
 
-  // CHANGE: Attach logger to request with correlation ID
-  req.log = {
-    info: (data, message) => {
-      console.log(JSON.stringify({
-        level: 'info',
-        correlationId,
-        timestamp: new Date().toISOString(),
-        service: 'auth-service',
-        message,
-        ...data,
-      }));
-    },
-    error: (data, message) => {
-      console.error(JSON.stringify({
-        level: 'error',
-        correlationId,
-        timestamp: new Date().toISOString(),
-        service: 'auth-service',
-        message,
-        ...data,
-      }));
-    },
-  };
-
-  // CHANGE: Log incoming request
-  req.log.info({
+  req.log = createRequestLogger({
+    correlationId,
+    requestId,
     method: req.method,
     path: req.path,
+  });
+
+  req.log.info({
     ip: req.ip,
+    userAgent: req.get('user-agent'),
   }, 'Incoming request');
+
+  res.on('finish', () => {
+    const elapsedNs = process.hrtime.bigint() - startTime;
+    const durationMs = Number(elapsedNs) / 1e6;
+
+    req.log.info({
+      statusCode: res.statusCode,
+      durationMs: Number(durationMs.toFixed(2)),
+      contentLength: res.getHeader('content-length') || null,
+    }, 'Request completed');
+  });
 
   next();
 };

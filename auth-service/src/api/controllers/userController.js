@@ -53,7 +53,7 @@ class UserController {
   async getMe(req, res, next) {
     try {
       const { token } = req.query;
-      
+
       if (!token) {
         return res.status(400).json({
           code: 'MISSING_TOKEN',
@@ -76,6 +76,28 @@ class UserController {
     }
   }
 
+  async getProfile(req, res, next) {
+    try {
+      const { userId } = req.user;
+      const profile = await userService.getUserById(userId);
+      res.json(profile);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async updateProfile(req, res, next) {
+    try {
+      const { userId } = req.user;
+      req.log.info({ userId, fields: Object.keys(req.body) }, 'Profile update requested');
+      const profile = await userService.updateUserProfile(userId, req.body);
+      req.log.info({ userId }, 'Profile updated successfully');
+      res.json(profile);
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async refreshToken(req, res, next) {
     try {
       const { refreshToken } = req.body;
@@ -91,6 +113,51 @@ class UserController {
       const { refreshToken } = req.body;
       const result = await userService.logoutUser(refreshToken);
       res.json({ success: result });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async addAddress(req, res, next) {
+    try {
+      const { userId } = req.user;
+      const addressData = req.body;
+      const address = await userService.addAddress(userId, addressData);
+      res.status(201).json(address);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async updateAddress(req, res, next) {
+    try {
+      const { userId } = req.user;
+      const { addressId } = req.params;
+      const addressData = req.body;
+      const address = await userService.updateAddress(userId, addressId, addressData);
+      res.json(address);
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async removeAddress(req, res, next) {
+    try {
+      const { userId } = req.user;
+      const { addressId } = req.params;
+      await userService.removeAddress(userId, addressId);
+      res.status(204).send();
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async setDefaultAddress(req, res, next) {
+    try {
+      const { userId } = req.user;
+      const { addressId } = req.params;
+      await userService.setDefaultAddress(userId, addressId);
+      res.status(204).send();
     } catch (error) {
       next(error);
     }

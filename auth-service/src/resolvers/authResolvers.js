@@ -117,6 +117,95 @@ const resolvers = {
         return false;
       }
     },
+
+    addAddress: async (_, { address }, context) => {
+      try {
+        const response = await axios.post(
+          `${API_BASE_URL}/addresses`,
+          address,
+          {
+            headers: {
+              'X-Correlation-ID': context.correlationId,
+              'Authorization': context.req.headers.authorization,
+            },
+          }
+        );
+        return response.data;
+      } catch (error) {
+        throw new Error(error.response?.data?.message || error.message);
+      }
+    },
+
+    updateAddress: async (_, { id, address }, context) => {
+      try {
+        const response = await axios.put(
+          `${API_BASE_URL}/addresses/${id}`,
+          address,
+          {
+            headers: {
+              'X-Correlation-ID': context.correlationId,
+              'Authorization': context.req.headers.authorization,
+            },
+          }
+        );
+        return response.data;
+      } catch (error) {
+        throw new Error(error.response?.data?.message || error.message);
+      }
+    },
+
+    removeAddress: async (_, { id }, context) => {
+      try {
+        await axios.delete(
+          `${API_BASE_URL}/addresses/${id}`,
+          {
+            headers: {
+              'X-Correlation-ID': context.correlationId,
+              'Authorization': context.req.headers.authorization,
+            },
+          }
+        );
+        return true;
+      } catch (error) {
+        throw new Error(error.response?.data?.message || error.message);
+      }
+    },
+
+    setDefaultAddress: async (_, { id }, context) => {
+      try {
+        await axios.patch(
+          `${API_BASE_URL}/addresses/${id}/default`,
+          {},
+          {
+            headers: {
+              'X-Correlation-ID': context.correlationId,
+              'Authorization': context.req.headers.authorization,
+            },
+          }
+        );
+        return true;
+      } catch (error) {
+        throw new Error(error.response?.data?.message || error.message);
+      }
+    },
+
+    updateProfile: async (_, { profile }, context) => {
+      try {
+        const response = await axios.patch(
+          `${API_BASE_URL}/profile`,
+          profile,
+          {
+            headers: {
+              'X-Correlation-ID': context.correlationId,
+              'Authorization': context.req.headers.authorization,
+            },
+          }
+        );
+        return response.data;
+      } catch (error) {
+        throw new Error(error.response?.data?.message || error.message);
+      }
+    },
   },
 };
 

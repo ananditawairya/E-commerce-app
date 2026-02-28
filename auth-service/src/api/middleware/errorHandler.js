@@ -15,6 +15,7 @@ const errorHandler = (err, req, res, next) => {
     'INVALID_ROLE': 400,
     'INVALID_CREDENTIALS': 401,
     'USER_NOT_FOUND': 404,
+    'ADDRESS_NOT_FOUND': 404,
     'INVALID_REFRESH_TOKEN': 401,
     'MISSING_TOKEN': 400,
     'INVALID_TOKEN': 401,

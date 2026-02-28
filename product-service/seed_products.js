@@ -411,7 +411,7 @@ for (let i = 0; i < 55; i++) {
         description: `A high-quality ${name.toLowerCase()} that is both functional and stylish. Perfect for everyday use in the ${category.toLowerCase()} category.`,
         category,
         basePrice: Math.floor(Math.random() * 150) + 10.99,
-        images: [`https://images.unsplash.com/photo-${1500000000000 + i}?auto=format&fit=crop&q=60&w=800`],
+        images: [`https://picsum.photos/seed/${name.replace(/\s+/g, '-')}/800/600`],
         variants: [{ name: 'Standard', stock: Math.floor(Math.random() * 100) + 5, priceModifier: 0 }]
     });
 }

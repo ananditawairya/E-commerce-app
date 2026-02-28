@@ -14,6 +14,8 @@ const userRoutes = require('./api/routes/userRoutes');
 const logger = require('./api/middleware/logger');
 const errorHandler = require('./api/middleware/errorHandler');
 const kafkaProducer = require('./kafka/kafkaProducer');
+const cacheService = require('./services/cacheService');
+const { appLogger, getLoggingConfig } = require('./utils/logger');
 
 const app = express();
 
@@ -61,7 +63,9 @@ app.get('/health', (req, res) => {
   res.json({ 
     status: 'healthy', 
     service: 'auth-service',
-    timestamp: new Date().toISOString()
+    cacheMode: cacheService.getMode(),
+    logging: getLoggingConfig(),
+    timestamp: new Date().toISOString(),
   });
 });
 
@@ -88,23 +92,24 @@ const connectDB = async () => {
       useNewUrlParser: true,
       useUnifiedTopology: true,
     });
-    console.log('✅ MongoDB connected - Auth Service');
+    appLogger.info('MongoDB connected');
   } catch (error) {
-    console.error('❌ MongoDB connection error:', error.message);
+    appLogger.error({ error: error.message }, 'MongoDB connection error');
     process.exit(1);
   }
 };
 
 const gracefulShutdown = async (signal) => {
-  console.log(`\n${signal} received, shutting down gracefully...`);
+  appLogger.info({ signal }, 'Shutdown signal received');
   
   try {
+    await cacheService.disconnect();
     await kafkaProducer.disconnect();
     await mongoose.connection.close();
-    console.log('✅ Connections closed');
+    appLogger.info('Connections closed');
     process.exit(0);
   } catch (error) {
-    console.error('❌ Error during shutdown:', error);
+    appLogger.error({ error }, 'Error during shutdown');
     process.exit(1);
   }
 };
@@ -115,11 +120,12 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 // Start server
 const startServer = async () => {
   await connectDB();
+  await cacheService.connect();
   
   try {
     await kafkaProducer.connect();
   } catch (error) {
-    console.warn('⚠️  Kafka connection failed, continuing without events:', error.message);
+    appLogger.warn({ error: error.message }, 'Kafka connection failed, continuing without events');
   }
   
   await server.start();
@@ -132,14 +138,14 @@ const startServer = async () => {
   
   // CHANGE: Bind to localhost only for security
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Auth Service running on http://localhost:${PORT}`);
-    console.log(`📡 REST API available at http://localhost:${PORT}/api/users`);
-    console.log(`🔒 GraphQL endpoint secured at http://localhost:${PORT}${server.graphqlPath}`);
-    console.log(`⚠️  GraphQL only accessible via API Gateway`);
-    // CHANGE: Log introspection status
-    if (isDevelopment) {
-      console.log(`🔍 Introspection enabled for gateway schema stitching`);
-    }
+    appLogger.info({
+      port: PORT,
+      restApi: `http://localhost:${PORT}/api/users`,
+      graphqlPath: `http://localhost:${PORT}${server.graphqlPath}`,
+      introspectionEnabled: isDevelopment,
+      cacheMode: cacheService.getMode(),
+      logging: getLoggingConfig(),
+    }, 'Auth service started');
   });
 };
 

@@ -68,9 +68,67 @@ const refreshTokenSchema = Joi.object({
   })
 });
 
+const addressSchema = Joi.object({
+  street: Joi.string().required(),
+  city: Joi.string().required(),
+  state: Joi.string().required(),
+  zipCode: Joi.string().required(),
+  country: Joi.string().required(),
+  isDefault: Joi.boolean().optional(),
+});
+
+const profilePreferenceSchema = Joi.object({
+  language: Joi.string()
+    .pattern(/^[a-z]{2}(-[A-Z]{2})?$/)
+    .messages({
+      'string.pattern.base': 'Language must be in BCP-47 style format (example: en-US)',
+    }),
+  currency: Joi.string()
+    .length(3)
+    .uppercase()
+    .messages({
+      'string.length': 'Currency must be a 3-letter ISO code',
+    }),
+  timezone: Joi.string()
+    .max(64),
+  marketingEmails: Joi.boolean(),
+  orderUpdates: Joi.boolean(),
+});
+
+const profileUpdateSchema = Joi.object({
+  name: Joi.string()
+    .pattern(/^[a-zA-Z\s'-]+$/)
+    .min(3)
+    .max(30),
+  phoneNumber: Joi.string()
+    .pattern(/^\+?[1-9]\d{7,14}$/)
+    .allow(null)
+    .messages({
+      'string.pattern.base': 'Phone number must be E.164 compatible (example: +14155552671)',
+    }),
+  avatarUrl: Joi.string()
+    .uri({ scheme: ['http', 'https'] })
+    .max(2048)
+    .allow(null),
+  bio: Joi.string()
+    .max(280)
+    .allow(''),
+  dateOfBirth: Joi.date()
+    .max('now')
+    .allow(null)
+    .messages({
+      'date.max': 'Date of birth cannot be in the future',
+    }),
+  preferences: profilePreferenceSchema,
+}).min(1).messages({
+  'object.min': 'At least one profile field must be provided',
+});
+
 module.exports = {
   registerSchema,
   loginSchema,
   verifyTokenSchema,
-  refreshTokenSchema
+  refreshTokenSchema,
+  addressSchema,
+  profileUpdateSchema,
 };

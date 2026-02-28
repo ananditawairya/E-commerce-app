@@ -24,7 +24,7 @@ const validate = (schema, property = 'body') => {
         req.log.error({
           property,
           errors,
-          requestId: req.id
+          requestId: req.requestId,
         }, 'Validation failed');
       }
 
