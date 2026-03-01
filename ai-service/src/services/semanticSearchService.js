@@ -12,8 +12,14 @@ const PRODUCT_SERVICE_URL = process.env.PRODUCT_SERVICE_URL || 'http://localhost
 const INTERNAL_JWT_SECRET = process.env.INTERNAL_JWT_SECRET || 'internal-secret';
 const PRODUCT_FETCH_TIMEOUT_MS = Number.parseInt(process.env.AI_PRODUCT_FETCH_TIMEOUT_MS || '6000', 10);
 
-const SEMANTIC_ENABLED = String(process.env.AI_SEMANTIC_ENABLED || 'true').toLowerCase() !== 'false';
-const EMBEDDING_MODEL = process.env.AI_EMBEDDING_MODEL || 'text-embedding-004';
+const SEMANTIC_ENABLED = String(process.env.AI_SEMANTIC_ENABLED || 'false').toLowerCase() !== 'false';
+const EMBEDDING_MODEL = String(process.env.AI_EMBEDDING_MODEL || '').trim();
+const EMBEDDING_MODEL_FALLBACKS = (process.env.AI_EMBEDDING_MODEL_FALLBACKS || '')
+    .split(',')
+    .map((value) => String(value || '').trim().replace(/\s+/g, ' '))
+    .filter(Boolean);
+const EMBEDDING_MODEL_CANDIDATES = Array.from(new Set([EMBEDDING_MODEL, ...EMBEDDING_MODEL_FALLBACKS]));
+const EMBEDDING_API_VERSION = process.env.AI_EMBEDDING_API_VERSION || 'v1beta';
 const SEMANTIC_MAX_PRODUCTS = Number.parseInt(process.env.AI_SEMANTIC_MAX_PRODUCTS || '120', 10);
 const SEMANTIC_PAGE_SIZE = Math.min(50, Number.parseInt(process.env.AI_SEMANTIC_PAGE_SIZE || '50', 10));
 const SEMANTIC_MIN_SCORE = Number.parseFloat(process.env.AI_SEMANTIC_MIN_SCORE || '0.42');
@@ -135,6 +141,43 @@ const createTextHash = (value) => {
         .slice(0, 24);
 };
 
+const buildModelScopedCacheKey = (baseKey, modelName) => {
+    if (!baseKey) {
+        return null;
+    }
+    return `${baseKey}:m:${createTextHash(modelName || 'unknown')}`;
+};
+
+const isEmbeddingModelUnavailableError = (error) => {
+    const statusCode = Number.parseInt(error?.status, 10);
+    if (statusCode === 404) {
+        return true;
+    }
+
+    const message = sanitizeText(error?.message || '').toLowerCase();
+    return message.includes('not found')
+        || message.includes('not supported for embedcontent');
+};
+
+const extractErrorMessage = (error) => {
+    const directMessage = sanitizeText(error?.message || '');
+    if (directMessage) {
+        return directMessage;
+    }
+
+    const causeMessage = sanitizeText(error?.cause?.message || '');
+    if (causeMessage) {
+        return causeMessage;
+    }
+
+    const errorCode = sanitizeText(error?.code || error?.cause?.code || '');
+    if (errorCode) {
+        return errorCode;
+    }
+
+    return 'unknown error';
+};
+
 const extractTokens = (value) => {
     return sanitizeText(value)
         .toLowerCase()
@@ -165,6 +208,9 @@ class SemanticSearchService {
             ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY)
             : null;
         this.embeddingModel = null;
+        this.embeddingModelName = null;
+        this.failedEmbeddingModels = new Set();
+        this.embeddingModelsExhausted = false;
 
         this.index = {
             products: [],
@@ -195,22 +241,60 @@ class SemanticSearchService {
             source: this.index.source,
             stats: this.index.stats,
             lastError: this.lastError,
-            model: EMBEDDING_MODEL,
+            model: this.embeddingModelName || EMBEDDING_MODEL || null,
+            modelCandidates: EMBEDDING_MODEL_CANDIDATES,
+            apiVersion: EMBEDDING_API_VERSION,
         };
     }
 
     getEmbeddingModel() {
-        if (!this.isEnabled()) {
+        if (!this.isEnabled() || this.embeddingModelsExhausted) {
             return null;
         }
 
-        if (!this.embeddingModel) {
+        if (!this.embeddingModel || !this.embeddingModelName) {
+            const nextModelName = EMBEDDING_MODEL_CANDIDATES.find(
+                (modelName) => !this.failedEmbeddingModels.has(modelName)
+            );
+
+            if (!nextModelName) {
+                this.embeddingModelsExhausted = true;
+                return null;
+            }
+
+            this.embeddingModelName = nextModelName;
             this.embeddingModel = this.genAI.getGenerativeModel({
-                model: EMBEDDING_MODEL,
+                model: nextModelName,
+            }, {
+                apiVersion: EMBEDDING_API_VERSION,
             });
         }
 
         return this.embeddingModel;
+    }
+
+    markEmbeddingModelUnavailable(modelName, error) {
+        if (modelName) {
+            this.failedEmbeddingModels.add(modelName);
+        }
+
+        this.embeddingModel = null;
+        this.embeddingModelName = null;
+
+        if (this.failedEmbeddingModels.size >= EMBEDDING_MODEL_CANDIDATES.length) {
+            this.embeddingModelsExhausted = true;
+            this.lastError = {
+                message: 'No supported embedding model configured',
+                at: new Date().toISOString(),
+                reason: 'embedding_model_unavailable',
+                triedModels: EMBEDDING_MODEL_CANDIDATES,
+            };
+            return;
+        }
+
+        console.warn(
+            `Embedding model "${modelName}" unavailable (${error?.message || 'unknown error'}). Trying fallback model...`
+        );
     }
 
     async loadIndexFromCache() {
@@ -321,40 +405,63 @@ class SemanticSearchService {
             };
         }
 
-        if (cacheKey) {
-            const cached = await cacheService.getJson(cacheKey);
-            if (Array.isArray(cached) && cached.length > 0) {
+        const maxModelAttempts = Math.max(1, EMBEDDING_MODEL_CANDIDATES.length);
+
+        for (let attempt = 0; attempt < maxModelAttempts; attempt += 1) {
+            const model = this.getEmbeddingModel();
+            const activeModelName = this.embeddingModelName;
+            if (!model || !activeModelName) {
+                break;
+            }
+
+            const scopedCacheKey = buildModelScopedCacheKey(cacheKey, activeModelName);
+            if (scopedCacheKey) {
+                const cached = await cacheService.getJson(scopedCacheKey);
+                if (Array.isArray(cached) && cached.length > 0) {
+                    return {
+                        vector: cached,
+                        cacheHit: true,
+                    };
+                }
+            }
+
+            try {
+                const result = await model.embedContent(normalizedText);
+
+                const rawValues =
+                    result?.embedding?.values ||
+                    result?.embedding?.value ||
+                    result?.embeddings?.[0]?.values ||
+                    null;
+
+                const vector = normalizeVector(rawValues);
+
+                if (!vector) {
+                    return {
+                        vector: null,
+                        cacheHit: false,
+                    };
+                }
+
+                if (scopedCacheKey) {
+                    await cacheService.setJson(scopedCacheKey, vector, ttlMs);
+                }
+
                 return {
-                    vector: cached,
-                    cacheHit: true,
+                    vector,
+                    cacheHit: false,
                 };
+            } catch (error) {
+                if (isEmbeddingModelUnavailableError(error)) {
+                    this.markEmbeddingModelUnavailable(activeModelName, error);
+                    continue;
+                }
+                throw error;
             }
         }
 
-        const model = this.getEmbeddingModel();
-        const result = await model.embedContent(normalizedText);
-
-        const rawValues =
-            result?.embedding?.values ||
-            result?.embedding?.value ||
-            result?.embeddings?.[0]?.values ||
-            null;
-
-        const vector = normalizeVector(rawValues);
-
-        if (!vector) {
-            return {
-                vector: null,
-                cacheHit: false,
-            };
-        }
-
-        if (cacheKey) {
-            await cacheService.setJson(cacheKey, vector, ttlMs);
-        }
-
         return {
-            vector,
+            vector: null,
             cacheHit: false,
         };
     }
@@ -411,7 +518,7 @@ class SemanticSearchService {
                 });
             } catch (error) {
                 failed += 1;
-                console.warn(`Semantic embedding failed for product ${product?.id}:`, error.message);
+                console.warn(`Semantic embedding failed for product ${product?.id}:`, extractErrorMessage(error));
             }
         }
 
@@ -443,7 +550,7 @@ class SemanticSearchService {
 
         this.indexBuildPromise = this.rebuildIndex(reason)
             .catch((error) => {
-                const errorMessage = error?.message || 'unknown error';
+                const errorMessage = extractErrorMessage(error);
                 this.lastError = {
                     message: errorMessage,
                     at: new Date().toISOString(),

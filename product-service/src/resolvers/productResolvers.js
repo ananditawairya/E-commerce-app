@@ -72,7 +72,7 @@ const resolvers = {
     sellerProducts: async (_, __, context) => {
       try {
         const user = await requireSeller(context);
-        
+
         const response = await axios.get(`${API_BASE_URL}/seller/${user.userId}`, {
           headers: {
             'X-Correlation-ID': context.correlationId,
@@ -172,6 +172,9 @@ const resolvers = {
   },
 
   Product: {
+    // Defensive: handle both _id and id for products from .lean() or raw queries
+    id: (product) => product.id || product._id,
+
     variants: (product) => {
       return product.variants || [];
     },
@@ -185,28 +188,28 @@ const resolvers = {
     // CHANGE: Removed parent() calls - access parent product from GraphQL info context
     effectiveDescription: (variant, _, __, info) => {
       // CHANGE: Get parent product from the source object in GraphQL execution
-      const product = info.path.prev && info.path.prev.key === 'variants' 
-        ? info.path.prev.prev.result 
+      const product = info.path.prev && info.path.prev.key === 'variants'
+        ? info.path.prev.prev.result
         : null;
-      
+
       return variant.description || (product ? product.description : '');
     },
 
     effectiveImages: (variant, _, __, info) => {
       // CHANGE: Get parent product from the source object in GraphQL execution
-      const product = info.path.prev && info.path.prev.key === 'variants' 
-        ? info.path.prev.prev.result 
+      const product = info.path.prev && info.path.prev.key === 'variants'
+        ? info.path.prev.prev.result
         : null;
-      
-      return variant.images && variant.images.length > 0 
-        ? variant.images 
+
+      return variant.images && variant.images.length > 0
+        ? variant.images
         : (product ? product.images : []);
     },
 
     effectivePrice: (variant, _, __, info) => {
       // CHANGE: Get parent product from the source object in GraphQL execution
-      const product = info.path.prev && info.path.prev.key === 'variants' 
-        ? info.path.prev.prev.result 
+      const product = info.path.prev && info.path.prev.key === 'variants'
+        ? info.path.prev.prev.result
         : null;
 
       if (!product || typeof product.basePrice !== 'number') {

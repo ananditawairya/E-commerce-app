@@ -74,6 +74,30 @@ class ProductController {
     }
   }
 
+  async getSemanticSearchStatus(req, res, next) {
+    try {
+      const status = await productService.getSemanticSearchStatus();
+      res.json({
+        success: true,
+        data: status,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  async reindexSemanticSearch(req, res, next) {
+    try {
+      const status = await productService.reindexSemanticSearch();
+      res.json({
+        success: true,
+        data: status,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async createProduct(req, res, next) {
     try {
       const { sellerId, input } = req.body;

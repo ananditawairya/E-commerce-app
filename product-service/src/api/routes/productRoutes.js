@@ -9,6 +9,8 @@ const router = express.Router();
 // CHANGE: RESTful endpoints for product operations
 router.get('/', productController.getProducts);
 router.get('/categories', productController.getCategories);
+router.get('/semantic/status', productController.getSemanticSearchStatus);
+router.post('/semantic/reindex', productController.reindexSemanticSearch);
 router.get('/:id', productController.getProduct);
 router.get('/seller/:sellerId', productController.getSellerProducts);
 router.post('/', productController.createProduct);

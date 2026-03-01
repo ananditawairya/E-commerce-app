@@ -40,7 +40,7 @@ const productEmbeddingSchema = new mongoose.Schema({
     },
     embeddingModel: {
         type: String,
-        default: 'text-embedding-004',
+        default: 'configured',
     },
     contentHash: {
         type: String,

@@ -37,7 +37,7 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           port: 22
-          command_timeout: 15m
+          command_timeout: 30m
           script: |
             set -euo pipefail
 
@@ -45,6 +45,8 @@ jobs:
             COMPOSE_FILE="docker-compose.prod.yml"
             BRANCH="${{ github.ref_name }}"
             HEALTH_URL="http://localhost:4000/health"
+            PRODUCT_SERVICE_URL="http://localhost:4002"
+            OLLAMA_MODEL="${OLLAMA_EMBED_MODEL:-embeddinggemma}"
 
             echo "═══════════════════════════════════════"
             echo "  Deploying branch: $BRANCH"
@@ -92,6 +94,37 @@ jobs:
               PROD_COUNT=$(docker exec ecommerce-mongodb mongosh --quiet --eval \
                 'db.getSiblingDB("product_db").products.countDocuments()')
               echo "✅ Seeded — $PROD_COUNT products"
+            fi
+
+            # Initialize semantic search infra when ollama service is present
+            if docker compose -f "$COMPOSE_FILE" config --services | grep -q '^ollama$'; then
+              echo "🧠 Waiting for Ollama..."
+              for i in $(seq 1 60); do
+                if docker exec ollama ollama list > /dev/null 2>&1; then
+                  echo "✅ Ollama ready (attempt $i/60)"
+                  break
+                fi
+                if [ "$i" -eq 60 ]; then
+                  echo "❌ Ollama did not become ready in time"
+                  docker compose -f "$COMPOSE_FILE" logs --tail=50 ollama
+                  exit 1
+                fi
+                sleep 5
+              done
+
+              if ! docker exec ollama ollama list | awk 'NR>1 {print $1}' | grep -qx "$OLLAMA_MODEL"; then
+                echo "⬇️ Pulling Ollama model: $OLLAMA_MODEL"
+                docker exec ollama ollama pull "$OLLAMA_MODEL"
+              else
+                echo "✅ Ollama model already available: $OLLAMA_MODEL"
+              fi
+
+              echo "♻️ Reindexing semantic catalog..."
+              docker exec product-service node /app/product-service/scripts/reindexSemanticSearch.js
+
+              echo "🔎 Semantic status:"
+              curl -sf "$PRODUCT_SERVICE_URL/api/products/semantic/status"
+              echo ""
             fi
 
             # Summary

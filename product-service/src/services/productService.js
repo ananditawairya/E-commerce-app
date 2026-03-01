@@ -1,6 +1,7 @@
 const Product = require('../models/Product');
 const { sanitizeProductInput } = require('../utils/inputSanitizer');
 const kafkaProducer = require('../kafka/kafkaProducer');
+const productSemanticSearchService = require('./productSemanticSearchService');
 const { v4: uuidv4 } = require('uuid');
 
 class ProductService {
@@ -14,12 +15,36 @@ class ProductService {
     limit = 20,
     offset = 0,
   }) {
-    const query = { isActive: true };
-
     const normalizedSearch = typeof search === 'string' ? search.trim() : '';
     const normalizedCategory = typeof category === 'string' ? category.trim() : '';
     const normalizedLimit = Number.isFinite(limit) ? Math.min(Math.max(limit, 1), 50) : 20;
     const normalizedOffset = Number.isFinite(offset) ? Math.max(offset, 0) : 0;
+    const resolvedSortBy = sortBy || (normalizedSearch ? 'RELEVANCE' : 'NEWEST');
+
+    // Hybrid search path:
+    // - semantic ranking for RELEVANCE searches when local embeddings are enabled
+    // - lexical fallback for all other cases or semantic misses/failures
+    if (normalizedSearch && resolvedSortBy === 'RELEVANCE' && productSemanticSearchService.isEnabled()) {
+      try {
+        const semanticProducts = await productSemanticSearchService.searchProducts({
+          search: normalizedSearch,
+          category: normalizedCategory || undefined,
+          minPrice,
+          maxPrice,
+          inStockOnly,
+          limit: normalizedLimit,
+          offset: normalizedOffset,
+        });
+
+        if (Array.isArray(semanticProducts) && semanticProducts.length > 0) {
+          return semanticProducts;
+        }
+      } catch (error) {
+        console.warn('Semantic search failed, falling back to lexical search:', error.message);
+      }
+    }
+
+    const query = { isActive: true };
 
     if (normalizedSearch) {
       query.$text = { $search: normalizedSearch };
@@ -48,7 +73,6 @@ class ProductService {
       if (Number.isFinite(safeMax)) query.basePrice.$lte = safeMax;
     }
 
-    const resolvedSortBy = sortBy || (normalizedSearch ? 'RELEVANCE' : 'NEWEST');
     let sortConfig = { createdAt: -1 };
     let useCaseInsensitiveCollation = false;
     let useTextScoreProjection = false;
@@ -121,6 +145,14 @@ class ProductService {
       .sort((a, b) => a.localeCompare(b));
   }
 
+  async getSemanticSearchStatus() {
+    return productSemanticSearchService.getStatus();
+  }
+
+  async reindexSemanticSearch() {
+    return productSemanticSearchService.reindexAllActiveProducts();
+  }
+
   async createProduct(sellerId, input, correlationId) {
     const sanitizedInput = sanitizeProductInput(input);
 
@@ -158,6 +190,12 @@ class ProductService {
     await product.save();
 
     setImmediate(async () => {
+      try {
+        await productSemanticSearchService.upsertProductEmbedding(product.toJSON());
+      } catch (error) {
+        console.warn('Failed to upsert product search embedding after create:', error.message);
+      }
+
       try {
         await kafkaProducer.publishProductCreated(
           product.toJSON(),
@@ -202,6 +240,12 @@ class ProductService {
 
     setImmediate(async () => {
       try {
+        await productSemanticSearchService.upsertProductEmbedding(product.toJSON());
+      } catch (error) {
+        console.warn('Failed to upsert product search embedding after update:', error.message);
+      }
+
+      try {
         await kafkaProducer.publishProductUpdated(
           product.toJSON(),
           correlationId || `product-update-${Date.now()}`
@@ -222,6 +266,14 @@ class ProductService {
       error.code = 'PRODUCT_NOT_FOUND';
       throw error;
     }
+
+    setImmediate(async () => {
+      try {
+        await productSemanticSearchService.removeProductEmbedding(productId);
+      } catch (error) {
+        console.warn('Failed to delete product search embedding after delete:', error.message);
+      }
+    });
 
     return true;
   }

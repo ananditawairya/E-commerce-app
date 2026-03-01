@@ -1,7 +1,7 @@
 // ai-service/src/services/chatbotService.js
 // AI Shopping Assistant with structured output, slot memory, reranking, safety checks, and cache-backed retrieval.
 
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { GoogleGenerativeAI, SchemaType } = require('@google/generative-ai');
 const axios = require('axios');
 const { v4: uuidv4 } = require('uuid');
 const jwt = require('jsonwebtoken');
@@ -21,7 +21,7 @@ const CATEGORY_CACHE_TTL_MS = Number.parseInt(process.env.CATEGORY_CACHE_TTL_MS 
 const PRODUCT_FETCH_TIMEOUT_MS = Number.parseInt(process.env.AI_PRODUCT_FETCH_TIMEOUT_MS || '6000', 10);
 const RETRIEVAL_CACHE_TTL_MS = Number.parseInt(process.env.AI_RETRIEVAL_CACHE_TTL_MS || '90000', 10);
 const CONVERSATION_CACHE_TTL_MS = Number.parseInt(process.env.AI_CONVERSATION_CACHE_TTL_MS || '3600000', 10);
-const MODEL_TIMEOUT_MS = Number.parseInt(process.env.AI_MODEL_TIMEOUT_MS || '4200', 10);
+const MODEL_TIMEOUT_MS = Number.parseInt(process.env.AI_MODEL_TIMEOUT_MS || '9000', 10);
 
 const MAX_CANDIDATE_PRODUCTS = Number.parseInt(process.env.AI_CHAT_MAX_CANDIDATES || '16', 10);
 const MAX_PRODUCTS_IN_PROMPT = Number.parseInt(process.env.AI_CHAT_PROMPT_PRODUCTS || '10', 10);
@@ -29,7 +29,37 @@ const MAX_HISTORY_TURNS = Number.parseInt(process.env.AI_CHAT_HISTORY_TURNS || '
 const MAX_CONVERSATION_MEMORY = Number.parseInt(process.env.AI_CHAT_CONVERSATION_MEMORY || '300', 10);
 const MIN_GAP_BETWEEN_MESSAGES_MS = Number.parseInt(process.env.AI_CHAT_MIN_MESSAGE_GAP_MS || '400', 10);
 
-const MODEL_NAME = process.env.GEMINI_MODEL || 'gemini-flash-latest';
+const MODEL_NAME = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+const MODEL_MAX_OUTPUT_TOKENS = Number.parseInt(process.env.AI_CHAT_MAX_OUTPUT_TOKENS || '1536', 10);
+const MODEL_RETRY_MAX_OUTPUT_TOKENS = Number.parseInt(process.env.AI_CHAT_RETRY_MAX_OUTPUT_TOKENS || '2200', 10);
+
+const CHAT_RESPONSE_SCHEMA = {
+    type: SchemaType.OBJECT,
+    required: ['reply', 'recommendations', 'followUpQuestion'],
+    properties: {
+        reply: {
+            type: SchemaType.STRING,
+        },
+        recommendations: {
+            type: SchemaType.ARRAY,
+            items: {
+                type: SchemaType.OBJECT,
+                required: ['productId', 'reason'],
+                properties: {
+                    productId: {
+                        type: SchemaType.STRING,
+                    },
+                    reason: {
+                        type: SchemaType.STRING,
+                    },
+                },
+            },
+        },
+        followUpQuestion: {
+            type: SchemaType.STRING,
+        },
+    },
+};
 
 const STOP_WORDS = new Set([
     'a', 'an', 'and', 'are', 'as', 'at', 'be', 'best', 'buy', 'can', 'do', 'for',
@@ -52,6 +82,10 @@ const PROMPT_ATTACK_PATTERNS = [
 ];
 
 const LEGACY_COMPATIBILITY_ERROR_PATTERN = /Unknown argument|Unknown type|Cannot query field|is not defined by type/i;
+const LOW_INTENT_MESSAGES = new Set([
+    'hi', 'hii', 'hiii', 'hello', 'hey', 'yo', 'sup', 'hola', 'namaste',
+    'ok', 'okay', 'hmm', 'hmmm',
+]);
 
 const categoryCache = {
     categories: [],
@@ -840,7 +874,8 @@ Rules:
 3. Keep reply concise, practical, and under 120 words.
 4. Return 0-4 recommendations.
 5. If intent is unclear, ask one short follow-up question.
-6. Never include markdown fences or additional keys.`;
+6. Never include markdown fences or additional keys.
+7. Ensure the JSON is complete and valid (no trailing commas, no partial output).`;
 };
 
 const extractJsonPayload = (rawText) => {
@@ -848,22 +883,28 @@ const extractJsonPayload = (rawText) => {
         return null;
     }
 
-    const normalized = String(rawText)
-        .replace(/^```json\s*/i, '')
-        .replace(/^```/i, '')
-        .replace(/```$/i, '')
-        .trim();
+    const normalized = String(rawText).trim();
+
+    const fencedMatch = normalized.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+    if (fencedMatch?.[1]) {
+        try {
+            return JSON.parse(fencedMatch[1].trim());
+        } catch (error) {
+            // Continue to fallback parsing below.
+        }
+    }
 
     try {
         return JSON.parse(normalized);
     } catch (error) {
-        const objectMatch = normalized.match(/\{[\s\S]*\}/);
-        if (!objectMatch) {
+        const firstBrace = normalized.indexOf('{');
+        const lastBrace = normalized.lastIndexOf('}');
+        if (firstBrace < 0 || lastBrace <= firstBrace) {
             return null;
         }
 
         try {
-            return JSON.parse(objectMatch[0]);
+            return JSON.parse(normalized.slice(firstBrace, lastBrace + 1));
         } catch (parseError) {
             return null;
         }
@@ -894,6 +935,70 @@ const parseModelResponse = (rawText, candidateProducts) => {
         reply,
         followUpQuestion,
         recommendations,
+    };
+};
+
+const getPrimaryFinishReason = (generation) => {
+    const finishReason = generation?.response?.candidates?.[0]?.finishReason;
+    return typeof finishReason === 'string' ? finishReason : '';
+};
+
+const extractRawTextFromGeneration = (generation) => {
+    const response = generation?.response;
+
+    try {
+        const directText = response?.text?.();
+        if (directText) {
+            return String(directText);
+        }
+    } catch (error) {
+        // response.text() may throw for blocked/empty candidates; fallback below.
+    }
+
+    const firstCandidateParts = response?.candidates?.[0]?.content?.parts;
+    if (Array.isArray(firstCandidateParts) && firstCandidateParts.length > 0) {
+        return firstCandidateParts
+            .map((part) => (typeof part?.text === 'string' ? part.text : ''))
+            .join('')
+            .trim();
+    }
+
+    return '';
+};
+
+const createChatModel = ({
+    temperature = 0.3,
+    maxOutputTokens = MODEL_MAX_OUTPUT_TOKENS,
+} = {}) => {
+    return genAI.getGenerativeModel({
+        model: MODEL_NAME,
+        systemInstruction: buildStructuredSystemPrompt(),
+        generationConfig: {
+            temperature,
+            topP: 0.9,
+            maxOutputTokens,
+            responseMimeType: 'application/json',
+            responseSchema: CHAT_RESPONSE_SCHEMA,
+        },
+    });
+};
+
+const runStructuredGeneration = async ({
+    promptPayload,
+    temperature = 0.3,
+    maxOutputTokens = MODEL_MAX_OUTPUT_TOKENS,
+    timeoutMessage = 'AI model timeout',
+}) => {
+    const model = createChatModel({ temperature, maxOutputTokens });
+    const generation = await withTimeout(
+        model.generateContent(JSON.stringify(promptPayload)),
+        MODEL_TIMEOUT_MS,
+        timeoutMessage
+    );
+
+    return {
+        rawText: extractRawTextFromGeneration(generation),
+        finishReason: getPrimaryFinishReason(generation),
     };
 };
 
@@ -978,6 +1083,20 @@ const validateMessageSafety = (message) => {
         reason: null,
         safeMessage: null,
     };
+};
+
+const isLowIntentMessage = (message) => {
+    const clean = sanitizeText(message).toLowerCase();
+    if (!clean) {
+        return true;
+    }
+
+    if (LOW_INTENT_MESSAGES.has(clean)) {
+        return true;
+    }
+
+    const keywords = extractKeywordTokens(clean, 8);
+    return keywords.length === 0;
 };
 
 const enforceRapidMessageGuard = (conversation, cleanMessage) => {
@@ -1165,35 +1284,72 @@ const generateAssistantResponse = async ({ message, conversation, slots, candida
     }
 
     try {
-        const model = genAI.getGenerativeModel({
-            model: MODEL_NAME,
-            systemInstruction: buildStructuredSystemPrompt(),
-            generationConfig: {
-                temperature: 0.35,
-                topP: 0.9,
-                maxOutputTokens: 320,
-                responseMimeType: 'application/json',
-            },
-        });
-
         const promptPayload = buildPromptPayload({
             message,
             conversation,
             slots,
             candidates: candidateProducts,
         });
+        let rawText = '';
+        let finishReason = '';
+        let parsed = null;
 
-        const generation = await withTimeout(
-            model.generateContent(JSON.stringify(promptPayload)),
-            MODEL_TIMEOUT_MS,
-            'AI model timeout'
-        );
+        try {
+            const attemptOne = await runStructuredGeneration({
+                promptPayload,
+                temperature: 0.3,
+                maxOutputTokens: MODEL_MAX_OUTPUT_TOKENS,
+                timeoutMessage: 'AI model timeout',
+            });
+            rawText = attemptOne.rawText;
+            finishReason = attemptOne.finishReason;
+            parsed = parseModelResponse(rawText, candidateProducts);
+        } catch (attemptOneError) {
+            console.warn('AI model first attempt failed:', attemptOneError.message);
+        }
 
-        const rawText = generation?.response?.text?.() || '';
-        const parsed = parseModelResponse(rawText, candidateProducts);
+        const shouldRetry =
+            !parsed ||
+            !rawText ||
+            finishReason === 'MAX_TOKENS';
+
+        if (shouldRetry) {
+            try {
+                const attemptTwo = await runStructuredGeneration({
+                    promptPayload,
+                    temperature: 0.2,
+                    maxOutputTokens: Math.max(MODEL_RETRY_MAX_OUTPUT_TOKENS, MODEL_MAX_OUTPUT_TOKENS),
+                    timeoutMessage: 'AI model retry timeout',
+                });
+
+                rawText = attemptTwo.rawText || rawText;
+                finishReason = attemptTwo.finishReason || finishReason;
+                parsed = parseModelResponse(rawText, candidateProducts) || parsed;
+            } catch (retryErr) {
+                console.warn('AI model retry also failed:', retryErr.message);
+            }
+        }
 
         if (!parsed || (!parsed.reply && parsed.recommendations.length === 0)) {
+            if (!parsed) {
+                console.warn(
+                    `AI response parse failed (model=${MODEL_NAME}, finishReason=${finishReason || 'unknown'}); falling back. Raw length=${String(rawText).length}, preview:`,
+                    String(rawText || '').slice(0, 300)
+                );
+            } else {
+                console.warn(
+                    `AI response missing reply and recommendations (model=${MODEL_NAME}); falling back.`
+                );
+            }
             return buildFallbackAssistantMessage(candidateProducts, slots);
+        }
+
+        if (!parsed.reply && parsed.recommendations.length > 0) {
+            return {
+                reply: 'I found a few relevant options. Tell me your budget and preferred style so I can narrow these down.',
+                followUpQuestion: parsed.followUpQuestion,
+                recommendations: parsed.recommendations,
+            };
         }
 
         return {
@@ -1202,7 +1358,10 @@ const generateAssistantResponse = async ({ message, conversation, slots, candida
             recommendations: parsed.recommendations,
         };
     } catch (error) {
-        console.warn('AI generation failed, using fallback response:', error.message);
+        console.warn(
+            `AI generation failed (model=${MODEL_NAME}, timeoutMs=${MODEL_TIMEOUT_MS}), using fallback response:`,
+            error.message
+        );
         return buildFallbackAssistantMessage(candidateProducts, slots);
     }
 };
@@ -1264,6 +1423,28 @@ const chat = async (userId, message, conversationId = null) => {
                 latencyMs: Date.now() - startedAt,
                 cacheHit: false,
                 safetyBlocked: false,
+            };
+        }
+
+        if (isLowIntentMessage(cleanMessage)) {
+            const prompt = 'Tell me the product type and budget, for example: "casual shirts under $50".';
+            conversation.messages.push({
+                role: 'model',
+                parts: [{ text: prompt }],
+            });
+            conversation.updatedAt = new Date();
+            await persistConversation(conversation);
+
+            return {
+                message: prompt,
+                products: [],
+                conversationId: convId,
+                followUpQuestion: 'What category and budget should I target?',
+                appliedFilters: getAppliedFilters(conversation.preferenceSlots),
+                latencyMs: Date.now() - startedAt,
+                cacheHit: false,
+                safetyBlocked: false,
+                semanticUsed: false,
             };
         }
 

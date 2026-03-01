@@ -69,6 +69,21 @@ services:
       timeout: 5s
       retries: 5
 
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - ecommerce-network
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 20s
+
   # ── Application Services ──────────────────────────────────
   # App services depend on infra being healthy, but start in
   # parallel with each other.  Each service has built-in retry
@@ -114,6 +129,8 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      ollama:
+        condition: service_healthy
     environment:
       NODE_ENV: development
       NODE_PATH: /app/product-service/node_modules
@@ -124,6 +141,13 @@ services:
       INTERNAL_JWT_SECRET: ${INTERNAL_JWT_SECRET:-your-internal-service-secret-here}
       KAFKA_BROKERS: kafka:9093
       KAFKA_LOG_LEVEL: ERROR
+      SEARCH_SEMANTIC_ENABLED: ${SEARCH_SEMANTIC_ENABLED:-true}
+      SEARCH_EMBEDDING_PROVIDER: ollama
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-embeddinggemma}
+      OLLAMA_TIMEOUT_MS: 3500
+      SEARCH_SEMANTIC_MAX_PRODUCTS: 800
+      SEARCH_SEMANTIC_MIN_SCORE: 0.18
     networks:
       - ecommerce-network
 
@@ -170,19 +194,19 @@ services:
       MONGODB_URI: mongodb://mongodb:27017/ai_service_db
       PRODUCT_API_URL: http://product-service:4002/api/products
       ORDER_API_URL: http://order-service:4003/api/orders
-      PRODUCT_SERVICE_URL: http://product-service:4002/graphql
+      PRODUCT_SERVICE_URL: http://product-service:4002
       INTERNAL_JWT_SECRET: ${INTERNAL_JWT_SECRET:-your-internal-service-secret-here}
       JWT_SECRET: ${JWT_SECRET:-your-super-secret-jwt-key-here}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: gemini-2.5-flash
       GATEWAY_URL: http://graphql-gateway:4000
       KAFKA_BROKERS: kafka:9093
       KAFKA_LOG_LEVEL: ERROR
       DEFAULT_RECOMMENDATION_LIMIT: 10
       TRENDING_WINDOW_DAYS: 7
-      AI_MODEL_TIMEOUT_MS: 4200
-      AI_SEMANTIC_ENABLED: "true"
-      AI_EMBEDDING_MODEL: text-embedding-004
-      AI_SEMANTIC_INDEX_ON_STARTUP: "true"
+      AI_MODEL_TIMEOUT_MS: 9000
+      AI_SEMANTIC_ENABLED: "false"
+      AI_SEMANTIC_INDEX_ON_STARTUP: "false"
     networks:
       - ecommerce-network
 
@@ -256,5 +280,6 @@ volumes:
   zookeeper_log:
   kafka_data:
   mongodb_data:
+  ollama_data:
   prometheus_data:
   grafana_data:
