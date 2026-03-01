@@ -45,7 +45,6 @@ jobs:
             COMPOSE_FILE="docker-compose.prod.yml"
             BRANCH="${{ github.ref_name }}"
             HEALTH_URL="http://localhost:4000/health"
-            PRODUCT_SERVICE_URL="http://localhost:4002"
             OLLAMA_MODEL="${OLLAMA_EMBED_MODEL:-embeddinggemma}"
 
             echo "═══════════════════════════════════════"
@@ -123,7 +122,7 @@ jobs:
               docker exec product-service node /app/product-service/scripts/reindexSemanticSearch.js
 
               echo "🔎 Semantic status:"
-              curl -sf "$PRODUCT_SERVICE_URL/api/products/semantic/status"
+              docker exec product-service node -e 'fetch("http://127.0.0.1:4002/api/products/semantic/status").then(async (r) => { if (!r.ok) throw new Error("HTTP " + r.status); console.log(await r.text()); }).catch((e) => { console.error(e.message); process.exit(1); });'
               echo ""
             fi
 
