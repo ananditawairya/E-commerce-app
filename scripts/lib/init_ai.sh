@@ -13,6 +13,7 @@ readonly _OLLAMA_RETRIES=60
 readonly _OLLAMA_INTERVAL=5
 readonly _SEARCH_REINDEX_RETRIES=5
 readonly _SEARCH_REINDEX_INTERVAL=4
+readonly _FAIL_ON_SEARCH_REINDEX="${FAIL_ON_SEARCH_REINDEX:-false}"
 
 #######################################
 # Interprets common truthy values.
@@ -170,7 +171,13 @@ init_ai() {
     fi
 
     if (( attempt == _SEARCH_REINDEX_RETRIES )); then
-      log::err "Dedicated search reindex failed after ${_SEARCH_REINDEX_RETRIES} attempts"
+      if is_true "${_FAIL_ON_SEARCH_REINDEX}"; then
+        log::err "Dedicated search reindex failed after ${_SEARCH_REINDEX_RETRIES} attempts"
+      else
+        log::warn "Dedicated search reindex failed after ${_SEARCH_REINDEX_RETRIES} attempts; continuing deploy"
+        log::warn "Search suggestions will fall back until Meilisearch auth/indexing is fixed"
+        return 0
+      fi
     fi
 
     log::warn "Dedicated search reindex attempt ${attempt} failed, retrying..."

@@ -24,6 +24,11 @@ const main = async () => {
     }
 
     if (!status.mode || status.mode.endsWith('_unavailable')) {
+      if (String(status.lastError || '').includes('401')) {
+        throw new Error(
+          'Meilisearch auth failed (401). Verify MEILI_MASTER_KEY matches the running Meilisearch container and has admin privileges.'
+        );
+      }
       throw new Error(
         `Dedicated search engine not ready: ${status.mode || 'unknown'}${status.lastError ? ` (${status.lastError})` : ''}`
       );

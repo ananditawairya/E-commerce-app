@@ -272,7 +272,7 @@ class SearchEngineService {
   async request(method, path, data) {
     const headers = {};
     if (this.meiliApiKey) {
-      headers['X-Meili-API-Key'] = this.meiliApiKey;
+      headers.Authorization = `Bearer ${this.meiliApiKey}`;
     }
 
     const response = await axios({
