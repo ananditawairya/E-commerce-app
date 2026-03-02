@@ -1,463 +1,182 @@
-// backend/order-service/src/services/orderService.js
-// Pass mongoose instance to saga coordinator
+const mongoose = require('mongoose');
 
 const Cart = require('../models/Cart');
 const Order = require('../models/Order');
 const kafkaProducer = require('../kafka/kafkaProducer');
-const mongoose = require('mongoose');
-// Import Saga coordinator
 const SagaCoordinator = require('../../../shared/saga/SagaCoordinator');
 const orderCreationSaga = require('../saga/orderCreationSaga');
+const cartOperations = require('./orderService/cartOperations');
+const orderReadOperations = require('./orderService/orderReadOperations');
+const orderMutationOperations = require('./orderService/orderMutationOperations');
 
-// Initialize saga coordinator with mongoose instance
 let sagaCoordinator;
 
-// Connect saga coordinator on service startup
-const initializeSagaCoordinator = async () => {
+/**
+ * Initializes shared saga coordinator for order workflows.
+ * @return {Promise<void>} No return value.
+ */
+async function initializeSagaCoordinator() {
   try {
-    // Pass mongoose instance to coordinator
     sagaCoordinator = new SagaCoordinator('order-service', mongoose);
-    
-    // Register order creation saga
     sagaCoordinator.registerSaga('ORDER_CREATION', orderCreationSaga);
-    
+
     await sagaCoordinator.connect();
     console.log('✅ Saga coordinator connected');
   } catch (error) {
     console.error('❌ Saga coordinator initialization failed:', error.message);
     throw error;
   }
-};
-
-class OrderService {
-  async getCart(userId) {
-    let cart = await Cart.findOne({ userId });
-
-    if (!cart) {
-      cart = new Cart({ userId, items: [] });
-      await cart.save();
-    }
-
-    return cart;
-  }
-
-  async addToCart(userId, { productId, productName, variantId, variantName, quantity, price }) {
-    let cart = await Cart.findOne({ userId });
-
-    if (!cart) {
-      cart = new Cart({ userId, items: [] });
-    }
-
-    const existingItemIndex = cart.items.findIndex(
-      item => item.productId === productId &&
-        (item.variantId || null) === (variantId || null)
-    );
-
-    if (existingItemIndex > -1) {
-      cart.items[existingItemIndex].quantity += quantity;
-      cart.items[existingItemIndex].productName = productName;
-      if (variantName) {
-        cart.items[existingItemIndex].variantName = variantName;
-      }
-    } else {
-      cart.items.push({ 
-        productId, 
-        productName, 
-        variantId, 
-        variantName, 
-        quantity, 
-        price 
-      });
-    }
-
-    await cart.save();
-    return cart;
-  }
-
-  async updateCartItem(userId, { productId, variantId, quantity }) {
-    const cart = await Cart.findOne({ userId });
-
-    if (!cart) {
-      const error = new Error('Cart not found');
-      error.code = 'CART_NOT_FOUND';
-      throw error;
-    }
-
-    const itemIndex = cart.items.findIndex(
-      item => item.productId === productId &&
-        (item.variantId || null) === (variantId || null)
-    );
-
-    if (itemIndex === -1) {
-      const error = new Error('Item not found in cart');
-      error.code = 'ITEM_NOT_FOUND';
-      throw error;
-    }
-
-    if (quantity <= 0) {
-      cart.items.splice(itemIndex, 1);
-    } else {
-      cart.items[itemIndex].quantity = quantity;
-    }
-
-    await cart.save();
-    return cart;
-  }
-
-  async removeFromCart(userId, { productId, variantId }) {
-    const cart = await Cart.findOne({ userId });
-
-    if (!cart) {
-      const error = new Error('Cart not found');
-      error.code = 'CART_NOT_FOUND';
-      throw error;
-    }
-
-    cart.items = cart.items.filter(
-      item => !(item.productId === productId &&
-        (item.variantId || null) === (variantId || null))
-    );
-
-    await cart.save();
-    return cart;
-  }
-
-  async clearCart(userId) {
-    await Cart.findOneAndUpdate(
-      { userId },
-      { items: [] }
-    );
-    return true;
-  }
-
-async createOrder(userId, { items, totalAmount, shippingAddress }, correlationId) {
-  // Ensure saga coordinator is initialized
-  if (!sagaCoordinator) {
-    throw new Error('Saga coordinator not initialized');
-  }
-
-  // Group items by seller to create separate orders
-  const itemsBySeller = items.reduce((acc, item) => {
-    if (!acc[item.sellerId]) {
-      acc[item.sellerId] = [];
-    }
-    acc[item.sellerId].push(item);
-    return acc;
-  }, {});
-
-  const sellerIds = Object.keys(itemsBySeller);
-  
-  // Create separate order for each seller
-  const createdOrders = [];
-  
-  for (const sellerId of sellerIds) {
-    const sellerItems = itemsBySeller[sellerId];
-    const sellerTotal = sellerItems.reduce(
-      (sum, item) => sum + (item.price * item.quantity),
-      0
-    );
-
-    // Create individual order per seller
-    const order = new Order({
-      orderId: `ORD-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-      buyerId: userId,
-      items: sellerItems,
-      totalAmount: sellerTotal,
-      shippingAddress,
-      status: 'pending',
-      paymentMethod: 'mock',
-    });
-
-    await order.save();
-
-    // Start saga for each seller's order
-    try {
-      const saga = await sagaCoordinator.startSaga(
-        'ORDER_CREATION',
-        {
-          orderId: order.orderId,
-          buyerId: order.buyerId,
-          items: order.items,
-          totalAmount: order.totalAmount,
-          shippingAddress: order.shippingAddress,
-        },
-        `${correlationId}-${sellerId}`
-      );
-
-      // Execute saga steps
-      await this.executeSagaSteps(saga, `${correlationId}-${sellerId}`);
-
-      // Keep new orders pending so sellers can explicitly confirm from dashboard.
-
-      await kafkaProducer.publishOrderCreated(
-        {
-          orderId: order.orderId,
-          buyerId: order.buyerId,
-          items: order.items,
-          totalAmount: order.totalAmount,
-          createdAt: order.createdAt,
-        },
-        `${correlationId}-${sellerId}`
-      );
-
-      createdOrders.push(order);
-
-      console.log(`✅ Order created successfully via saga: ${order.orderId} for seller: ${sellerId}`);
-    } catch (error) {
-      // If saga fails, update order status to cancelled
-      order.status = 'cancelled';
-      await order.save();
-
-      console.error(`❌ Order creation saga failed: ${order.orderId}`, error.message);
-      
-      // Continue creating orders for other sellers even if one fails
-      createdOrders.push(order);
-    }
-  }
-
-  // Return array of orders instead of single order
-  return createdOrders;
 }
 
-  // Execute saga steps sequentially
-  async executeSagaSteps(saga, correlationId) {
-    const definition = orderCreationSaga;
-
-    for (let i = 0; i < definition.steps.length; i++) {
-      const step = definition.steps[i];
-      
-      try {
-        console.log(`🔄 Executing saga step: ${step.name}`);
-        
-        const stepData = await step.execute(saga.payload, correlationId);
-        
-        await sagaCoordinator.completeStep(saga.sagaId, step.name, stepData, correlationId);
-        
-        console.log(`✅ Saga step completed: ${step.name}`);
-      } catch (error) {
-        console.error(`❌ Saga step failed: ${step.name}`, error.message);
-        
-        await sagaCoordinator.failStep(saga.sagaId, step.name, error, correlationId);
-        
-        throw error;
-      }
-    }
-  }
-
-  async getOrdersByBuyer(buyerId) {
-    const orders = await Order.find({ buyerId })
-      .sort({ createdAt: -1 });
-    return orders;
-  }
-
-  async getOrdersBySeller(sellerId) {
-    const orders = await Order.find({ 'items.sellerId': sellerId })
-      .sort({ createdAt: -1 });
-    return orders;
-  }
-
-  async getSellerAnalytics(sellerId, days = 30) {
-    const safeDays = Math.max(1, Math.min(Number(days) || 30, 365));
-    const now = new Date();
-    const startUtc = new Date(Date.UTC(
-      now.getUTCFullYear(),
-      now.getUTCMonth(),
-      now.getUTCDate() - (safeDays - 1),
-      0,
-      0,
-      0,
-      0
-    ));
-
-    const match = {
-      'items.sellerId': sellerId,
-      createdAt: { $gte: startUtc, $lte: now },
-    };
-
-    const sellerRevenueProjection = [
-      { $match: match },
-      {
-        $addFields: {
-          sellerRevenue: {
-            $sum: {
-              $map: {
-                input: {
-                  $filter: {
-                    input: '$items',
-                    as: 'item',
-                    cond: { $eq: ['$$item.sellerId', sellerId] },
-                  },
-                },
-                as: 'item',
-                in: {
-                  $multiply: [
-                    { $ifNull: ['$$item.price', 0] },
-                    { $ifNull: ['$$item.quantity', 0] },
-                  ],
-                },
-              },
-            },
-          },
-        },
-      },
-    ];
-
-    const totalsAgg = await Order.aggregate([
-      ...sellerRevenueProjection,
-      {
-        $group: {
-          _id: null,
-          totalRevenue: { $sum: '$sellerRevenue' },
-          totalOrders: { $sum: 1 },
-        },
-      },
-    ]);
-
-    const statusAgg = await Order.aggregate([
-      { $match: match },
-      { $group: { _id: '$status', count: { $sum: 1 } } },
-    ]);
-
-    const trendAgg = await Order.aggregate([
-      ...sellerRevenueProjection,
-      {
-        $group: {
-          _id: {
-            $dateToString: {
-              format: '%Y-%m-%d',
-              date: '$createdAt',
-              timezone: 'UTC',
-            },
-          },
-          revenue: { $sum: '$sellerRevenue' },
-          orders: { $sum: 1 },
-        },
-      },
-      { $sort: { _id: 1 } },
-    ]);
-
-    const totals = totalsAgg[0] || { totalRevenue: 0, totalOrders: 0 };
-    const averageOrderValue = totals.totalOrders > 0
-      ? totals.totalRevenue / totals.totalOrders
-      : 0;
-
-    const statusMap = statusAgg.map(s => ({ status: s._id, count: s.count }));
-
-    const trendMap = new Map(trendAgg.map(t => [t._id, t]));
-    const trend = [];
-    for (let i = 0; i < safeDays; i++) {
-      const d = new Date(startUtc);
-      d.setUTCDate(startUtc.getUTCDate() + i);
-      const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
-      const point = trendMap.get(key);
-      trend.push({
-        date: key,
-        revenue: point ? point.revenue : 0,
-        orders: point ? point.orders : 0,
-      });
-    }
-
-    if (process.env.NODE_ENV !== 'production') {
-      const nonZeroTrendPoints = trend.filter(
-        (point) => Number(point.orders) > 0 || Number(point.revenue) > 0
-      ).length;
-      console.log('ANALYTICS_V2', {
-        sellerId,
-        days: safeDays,
-        rangeStartUtc: startUtc.toISOString(),
-        rangeEndUtc: now.toISOString(),
-        totalOrders: totals.totalOrders,
-        totalRevenue: totals.totalRevenue,
-        nonZeroTrendPoints,
-        lastTrendDate: trend[trend.length - 1]?.date || null,
-      });
-    }
-
-    return {
-      totalRevenue: totals.totalRevenue,
-      totalOrders: totals.totalOrders,
-      averageOrderValue,
-      ordersByStatus: statusMap,
-      trend,
+/**
+ * Service orchestrator for order and cart domain operations.
+ */
+class OrderService {
+  constructor() {
+    this.deps = {
+      Cart,
+      Order,
+      kafkaProducer,
+      orderCreationSaga,
     };
   }
 
-  async getOrderById(orderId) {
-    const order = await Order.findById(orderId);
-    if (!order) {
-      const error = new Error('Order not found');
-      error.code = 'ORDER_NOT_FOUND';
-      throw error;
-    }
-    return order;
+  /**
+   * Returns buyer cart, creating empty cart if missing.
+   * @param {string} userId Buyer user id.
+   * @return {Promise<object>} Cart document.
+   */
+  async getCart(userId) {
+    return cartOperations.getCart(this.deps, userId);
   }
 
-  async updateOrderStatus(orderId, sellerId, status, correlationId) {
-    const order = await Order.findById(orderId);
-
-    if (!order) {
-      const error = new Error('Order not found');
-      error.code = 'ORDER_NOT_FOUND';
-      throw error;
-    }
-
-    const hasItems = order.items.some(item => item.sellerId === sellerId);
-    if (!hasItems) {
-      const error = new Error('Unauthorized to update this order');
-      error.code = 'UNAUTHORIZED';
-      throw error;
-    }
-
-    order.status = status;
-    await order.save();
-
-    setImmediate(async () => {
-      try {
-        await kafkaProducer.publishOrderStatusUpdated(order.orderId, status, correlationId);
-      } catch (error) {
-        console.error('Failed to publish order status update event:', error);
-      }
-    });
-
-    return order;
+  /**
+   * Adds item to buyer cart.
+   * @param {string} userId Buyer user id.
+   * @param {object} input Item payload.
+   * @return {Promise<object>} Updated cart.
+   */
+  async addToCart(userId, input) {
+    return cartOperations.addToCart(this.deps, userId, input);
   }
 
-  async cancelOrder(orderId, sellerId, correlationId) {
-    const order = await Order.findById(orderId);
+  /**
+   * Updates quantity for one cart item.
+   * @param {string} userId Buyer user id.
+   * @param {object} input Update payload.
+   * @return {Promise<object>} Updated cart.
+   */
+  async updateCartItem(userId, input) {
+    return cartOperations.updateCartItem(this.deps, userId, input);
+  }
 
-    if (!order) {
-      const error = new Error('Order not found');
-      error.code = 'ORDER_NOT_FOUND';
-      throw error;
-    }
+  /**
+   * Removes one cart item.
+   * @param {string} userId Buyer user id.
+   * @param {object} input Remove payload.
+   * @return {Promise<object>} Updated cart.
+   */
+  async removeFromCart(userId, input) {
+    return cartOperations.removeFromCart(this.deps, userId, input);
+  }
 
-    const hasItems = order.items.some(item => item.sellerId === sellerId);
-    if (!hasItems) {
-      const error = new Error('Unauthorized to cancel this order');
-      error.code = 'UNAUTHORIZED';
-      throw error;
-    }
+  /**
+   * Clears buyer cart.
+   * @param {string} userId Buyer user id.
+   * @return {Promise<boolean>} True when cleared.
+   */
+  async clearCart(userId) {
+    return cartOperations.clearCart(this.deps, userId);
+  }
 
-    if (order.status === 'cancelled' || order.status === 'delivered') {
-      const error = new Error('Order cannot be cancelled');
-      error.code = 'CANNOT_CANCEL_ORDER';
-      throw error;
-    }
-
-    order.status = 'cancelled';
-    await order.save();
-
-    await kafkaProducer.publishOrderCancelled(
+  /**
+   * Creates one order per seller from buyer checkout payload.
+   * @param {string} userId Buyer user id.
+   * @param {{items: object[], totalAmount: number, shippingAddress: object}} input Order payload.
+   * @param {string} correlationId Correlation id.
+   * @return {Promise<object[]>} Created orders.
+   */
+  async createOrder(userId, input, correlationId) {
+    return orderMutationOperations.createOrder(
       {
-        orderId: order.orderId,
-        buyerId: order.buyerId,
-        items: order.items,
-        totalAmount: order.totalAmount,
+        ...this.deps,
+        sagaCoordinator,
       },
+      userId,
+      input,
       correlationId
     );
+  }
 
-    return order;
+  /**
+   * Returns orders for buyer.
+   * @param {string} buyerId Buyer user id.
+   * @return {Promise<object[]>} Order list.
+   */
+  async getOrdersByBuyer(buyerId) {
+    return orderReadOperations.getOrdersByBuyer(this.deps, buyerId);
+  }
+
+  /**
+   * Returns orders for seller.
+   * @param {string} sellerId Seller user id.
+   * @return {Promise<object[]>} Order list.
+   */
+  async getOrdersBySeller(sellerId) {
+    return orderReadOperations.getOrdersBySeller(this.deps, sellerId);
+  }
+
+  /**
+   * Returns seller analytics by day range.
+   * @param {string} sellerId Seller user id.
+   * @param {number=} days Day range.
+   * @return {Promise<object>} Analytics payload.
+   */
+  async getSellerAnalytics(sellerId, days = 30) {
+    return orderReadOperations.getSellerAnalytics(this.deps, sellerId, days);
+  }
+
+  /**
+   * Returns order by id.
+   * @param {string} orderId Order id.
+   * @return {Promise<object>} Order document.
+   */
+  async getOrderById(orderId) {
+    return orderReadOperations.getOrderById(this.deps, orderId);
+  }
+
+  /**
+   * Updates seller-owned order status.
+   * @param {string} orderId Order id.
+   * @param {string} sellerId Seller user id.
+   * @param {string} status New status.
+   * @param {string} correlationId Correlation id.
+   * @return {Promise<object>} Updated order.
+   */
+  async updateOrderStatus(orderId, sellerId, status, correlationId) {
+    return orderMutationOperations.updateOrderStatus(
+      this.deps,
+      orderId,
+      sellerId,
+      status,
+      correlationId
+    );
+  }
+
+  /**
+   * Cancels seller-owned order.
+   * @param {string} orderId Order id.
+   * @param {string} sellerId Seller user id.
+   * @param {string} correlationId Correlation id.
+   * @return {Promise<object>} Cancelled order.
+   */
+  async cancelOrder(orderId, sellerId, correlationId) {
+    return orderMutationOperations.cancelOrder(
+      this.deps,
+      orderId,
+      sellerId,
+      correlationId
+    );
   }
 }
 

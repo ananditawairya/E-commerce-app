@@ -1,15 +1,21 @@
-const DEFAULT_TTL_MS = Number.parseInt(
-  process.env.PRODUCT_CACHE_DEFAULT_TTL_MS || '120000',
-  10
-);
-const JITTER_RATIO = Number.parseFloat(
-  process.env.PRODUCT_CACHE_TTL_JITTER_RATIO || '0.2'
-);
-const MEMORY_SWEEP_INTERVAL_MS = Number.parseInt(
-  process.env.PRODUCT_CACHE_SWEEP_INTERVAL_MS || '60000',
-  10
-);
-const NAMESPACE_VERSION_PREFIX = 'product:cache:ns:v1:';
+const {
+  DEFAULT_TTL_MS,
+  MEMORY_SWEEP_INTERVAL_MS,
+} = require('./cache/constants');
+const {
+  applyTtlJitter,
+  sweepMemory,
+} = require('./cache/memory');
+const {
+  deleteKey,
+  getJson,
+  setJson,
+} = require('./cache/jsonStore');
+const {
+  bumpNamespaceVersion,
+  getNamespaceVersion,
+} = require('./cache/namespaceStore');
+const { withSingleflight } = require('./cache/singleflight');
 
 /**
  * Product service cache:
@@ -92,10 +98,7 @@ class CacheService {
    * @return {number} Jittered TTL.
    */
   applyTtlJitter(ttlMs) {
-    const safeTtlMs = Number.isFinite(ttlMs) && ttlMs > 0 ? ttlMs : DEFAULT_TTL_MS;
-    const safeRatio = Number.isFinite(JITTER_RATIO) && JITTER_RATIO >= 0 ? JITTER_RATIO : 0;
-    const extra = Math.floor(Math.random() * safeTtlMs * safeRatio);
-    return safeTtlMs + extra;
+    return applyTtlJitter(ttlMs);
   }
 
   /**
@@ -103,12 +106,7 @@ class CacheService {
    * @return {void} No return value.
    */
   sweepMemory() {
-    const now = Date.now();
-    for (const [key, entry] of this.memoryStore.entries()) {
-      if (!entry || entry.expiresAt <= now) {
-        this.memoryStore.delete(key);
-      }
-    }
+    return sweepMemory(this);
   }
 
   /**
@@ -117,29 +115,7 @@ class CacheService {
    * @return {Promise<unknown|null>} Cached value.
    */
   async getJson(key) {
-    if (!key) {
-      return null;
-    }
-
-    if (this.redisModeEnabled && this.redisClient) {
-      try {
-        const raw = await this.redisClient.get(key);
-        return raw ? JSON.parse(raw) : null;
-      } catch (error) {
-        console.warn('Product cache Redis get failed:', error.message);
-      }
-    }
-
-    const entry = this.memoryStore.get(key);
-    if (!entry) {
-      return null;
-    }
-    if (entry.expiresAt <= Date.now()) {
-      this.memoryStore.delete(key);
-      return null;
-    }
-
-    return entry.value;
+    return getJson(this, key);
   }
 
   /**
@@ -150,26 +126,7 @@ class CacheService {
    * @return {Promise<void>} Completion promise.
    */
   async setJson(key, value, ttlMs = DEFAULT_TTL_MS) {
-    if (!key) {
-      return;
-    }
-
-    const safeTtlMs = Number.isFinite(ttlMs) && ttlMs > 0 ? ttlMs : DEFAULT_TTL_MS;
-    if (this.redisModeEnabled && this.redisClient) {
-      try {
-        await this.redisClient.set(key, JSON.stringify(value), {
-          PX: safeTtlMs,
-        });
-        return;
-      } catch (error) {
-        console.warn('Product cache Redis set failed:', error.message);
-      }
-    }
-
-    this.memoryStore.set(key, {
-      value,
-      expiresAt: Date.now() + safeTtlMs,
-    });
+    return setJson(this, key, value, ttlMs);
   }
 
   /**
@@ -178,18 +135,7 @@ class CacheService {
    * @return {Promise<void>} Completion promise.
    */
   async delete(key) {
-    if (!key) {
-      return;
-    }
-
-    this.memoryStore.delete(key);
-    if (this.redisModeEnabled && this.redisClient) {
-      try {
-        await this.redisClient.del(key);
-      } catch (error) {
-        console.warn('Product cache Redis delete failed:', error.message);
-      }
-    }
+    return deleteKey(this, key);
   }
 
   /**
@@ -200,25 +146,7 @@ class CacheService {
    * @return {Promise<T>} Shared result promise.
    */
   withSingleflight(key, fetcher) {
-    if (!key) {
-      return fetcher();
-    }
-
-    const existing = this.inFlight.get(key);
-    if (existing) {
-      return existing;
-    }
-
-    const promise = (async () => {
-      try {
-        return await fetcher();
-      } finally {
-        this.inFlight.delete(key);
-      }
-    })();
-
-    this.inFlight.set(key, promise);
-    return promise;
+    return withSingleflight(this, key, fetcher);
   }
 
   /**
@@ -269,30 +197,7 @@ class CacheService {
    * @return {Promise<number>} Namespace version.
    */
   async getNamespaceVersion(namespace) {
-    const safeNamespace = String(namespace || '').trim();
-    if (!safeNamespace) {
-      return 1;
-    }
-
-    const redisKey = `${NAMESPACE_VERSION_PREFIX}${safeNamespace}`;
-    if (this.redisModeEnabled && this.redisClient) {
-      try {
-        const currentValue = await this.redisClient.get(redisKey);
-        if (currentValue) {
-          return Number.parseInt(currentValue, 10) || 1;
-        }
-
-        await this.redisClient.set(redisKey, '1');
-        return 1;
-      } catch (error) {
-        console.warn('Product cache namespace read failed:', error.message);
-      }
-    }
-
-    if (!this.memoryNamespaceVersions.has(safeNamespace)) {
-      this.memoryNamespaceVersions.set(safeNamespace, 1);
-    }
-    return this.memoryNamespaceVersions.get(safeNamespace);
+    return getNamespaceVersion(this, namespace);
   }
 
   /**
@@ -301,25 +206,7 @@ class CacheService {
    * @return {Promise<number>} New namespace version.
    */
   async bumpNamespaceVersion(namespace) {
-    const safeNamespace = String(namespace || '').trim();
-    if (!safeNamespace) {
-      return 1;
-    }
-
-    const redisKey = `${NAMESPACE_VERSION_PREFIX}${safeNamespace}`;
-    if (this.redisModeEnabled && this.redisClient) {
-      try {
-        const next = await this.redisClient.incr(redisKey);
-        return Number.parseInt(next, 10) || 1;
-      } catch (error) {
-        console.warn('Product cache namespace bump failed:', error.message);
-      }
-    }
-
-    const current = this.memoryNamespaceVersions.get(safeNamespace) || 1;
-    const next = current + 1;
-    this.memoryNamespaceVersions.set(safeNamespace, next);
-    return next;
+    return bumpNamespaceVersion(this, namespace);
   }
 }
 

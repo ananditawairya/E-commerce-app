@@ -1,393 +1,159 @@
-// backend/auth-service/src/services/userService.js
-
 const User = require('../models/User');
 const { generateTokens, verifyAccessToken, verifyRefreshToken } = require('../utils/jwt');
 const kafkaProducer = require('../kafka/kafkaProducer');
 const cacheService = require('./cacheService');
 const { appLogger } = require('../utils/logger');
+const authOperations = require('./userService/authOperations');
+const profileOperations = require('./userService/profileOperations');
+const addressOperations = require('./userService/addressOperations');
+const {
+  invalidateUserProfileCache,
+  getUserProfileCacheKey,
+} = require('./userService/helpers');
 
 const USER_PROFILE_CACHE_TTL_MS = Number.parseInt(
   process.env.AUTH_USER_PROFILE_CACHE_TTL_MS || '300000',
   10
 );
 
+/**
+ * User domain service with authentication, profile, and address operations.
+ */
 class UserService {
+  constructor() {
+    this.deps = {
+      User,
+      appLogger,
+      cacheService,
+      generateTokens,
+      kafkaProducer,
+      userProfileCacheTtlMs: USER_PROFILE_CACHE_TTL_MS,
+      verifyAccessToken,
+      verifyRefreshToken,
+    };
+  }
+
+  /**
+   * Builds profile cache key for one user.
+   * @param {string} userId User id.
+   * @return {string} Cache key.
+   */
   getUserProfileCacheKey(userId) {
-    return `auth:user:profile:${userId}`;
+    return getUserProfileCacheKey(userId);
   }
 
-  buildAddress(address) {
-    return {
-      id: (address._id || address.id).toString(),
-      street: address.street,
-      city: address.city,
-      state: address.state,
-      zipCode: address.zipCode,
-      country: address.country,
-      isDefault: Boolean(address.isDefault),
-    };
-  }
-
-  buildUserProfile(user) {
-    const preferences = user.preferences?.toObject ? user.preferences.toObject() : (user.preferences || {});
-
-    return {
-      id: (user._id || user.id).toString(),
-      email: user.email,
-      name: user.name,
-      role: user.role,
-      phoneNumber: user.phoneNumber || null,
-      avatarUrl: user.avatarUrl || null,
-      bio: user.bio || '',
-      dateOfBirth: user.dateOfBirth || null,
-      emailVerified: Boolean(user.emailVerified),
-      preferences: {
-        language: preferences.language || 'en-US',
-        currency: preferences.currency || 'USD',
-        timezone: preferences.timezone || 'UTC',
-        marketingEmails: Boolean(preferences.marketingEmails),
-        orderUpdates: preferences.orderUpdates !== false,
-      },
-      addresses: (user.addresses || []).map((address) => this.buildAddress(address)),
-      lastLoginAt: user.lastLoginAt || null,
-      createdAt: user.createdAt,
-      updatedAt: user.updatedAt,
-    };
-  }
-
-  async cacheUserProfile(profile) {
-    if (!profile?.id) {
-      return;
-    }
-
-    await cacheService.setJson(
-      this.getUserProfileCacheKey(profile.id),
-      profile,
-      USER_PROFILE_CACHE_TTL_MS
-    );
-  }
-
+  /**
+   * Invalidates one cached user profile.
+   * @param {string} userId User id.
+   * @return {Promise<void>} No return value.
+   */
   async invalidateUserProfileCache(userId) {
-    if (!userId) {
-      return;
-    }
-
-    await cacheService.delete(this.getUserProfileCacheKey(userId));
+    return invalidateUserProfileCache(this.deps, userId);
   }
 
-  async createUser({ email, password, name, role }) {
-    const existingUser = await User.findOne({ email });
-    if (existingUser) {
-      const error = new Error('User already exists');
-      error.code = 'USER_EXISTS';
-      throw error;
-    }
-
-    const user = new User({ email, password, name, role });
-    await user.save();
-
-    const tokens = generateTokens({
-      userId: user._id.toString(),
-      email: user.email,
-      role: user.role,
-    });
-
-    user.refreshTokens.push({ token: tokens.refreshToken });
-    await user.save();
-
-    await this.cacheUserProfile(this.buildUserProfile(user));
-
-    setImmediate(async () => {
-      try {
-        await kafkaProducer.publishUserRegistered(
-          {
-            id: user._id.toString(),
-            email: user.email,
-            name: user.name,
-            role: user.role,
-            createdAt: user.createdAt,
-          },
-          `user-reg-${Date.now()}`
-        );
-      } catch (error) {
-        appLogger.error({ error: error.message }, 'Failed to publish user registration event');
-      }
-    });
-
-    return {
-      user: {
-        id: user._id.toString(),
-        email: user.email,
-        name: user.name,
-        role: user.role,
-        createdAt: user.createdAt,
-      },
-      accessToken: tokens.accessToken,
-      refreshToken: tokens.refreshToken,
-    };
+  /**
+   * Registers one user.
+   * @param {{email: string, password: string, name: string, role: string}} input Registration payload.
+   * @return {Promise<object>} Registration response.
+   */
+  async createUser(input) {
+    return authOperations.createUser(this.deps, input);
   }
 
-  async authenticateUser({ email, password }) {
-    const user = await User.findOne({ email });
-    if (!user) {
-      const error = new Error('Invalid credentials');
-      error.code = 'INVALID_CREDENTIALS';
-      throw error;
-    }
-
-    const isValidPassword = await user.comparePassword(password);
-    if (!isValidPassword) {
-      const error = new Error('Invalid credentials');
-      error.code = 'INVALID_CREDENTIALS';
-      throw error;
-    }
-
-    const tokens = generateTokens({
-      userId: user._id.toString(),
-      email: user.email,
-      role: user.role,
-    });
-
-    user.refreshTokens.push({ token: tokens.refreshToken });
-    user.lastLoginAt = new Date();
-    await user.save();
-
-    await this.cacheUserProfile(this.buildUserProfile(user));
-
-    return {
-      user: {
-        id: user._id.toString(),
-        email: user.email,
-        name: user.name,
-        role: user.role,
-      },
-      accessToken: tokens.accessToken,
-      refreshToken: tokens.refreshToken,
-    };
+  /**
+   * Authenticates one user.
+   * @param {{email: string, password: string}} input Login payload.
+   * @return {Promise<object>} Authentication response.
+   */
+  async authenticateUser(input) {
+    return authOperations.authenticateUser(this.deps, input);
   }
 
+  /**
+   * Verifies access token.
+   * @param {string} token Access token.
+   * @return {Promise<object>} Verification payload.
+   */
   async verifyUserToken(token) {
-    try {
-      const decoded = verifyAccessToken(token);
-      return {
-        userId: decoded.userId,
-        role: decoded.role,
-        valid: true,
-      };
-    } catch (error) {
-      return { valid: false };
-    }
+    return authOperations.verifyUserToken(this.deps, token);
   }
 
+  /**
+   * Returns user profile by id.
+   * @param {string} userId User id.
+   * @return {Promise<object>} Profile payload.
+   */
   async getUserById(userId) {
-    const key = this.getUserProfileCacheKey(userId);
-
-    const { value } = await cacheService.withJsonCache(
-      key,
-      USER_PROFILE_CACHE_TTL_MS,
-      async () => {
-        const user = await User.findById(userId).lean();
-        if (!user) {
-          const error = new Error('User not found');
-          error.code = 'USER_NOT_FOUND';
-          throw error;
-        }
-
-        return this.buildUserProfile(user);
-      }
-    );
-
-    return value;
+    return profileOperations.getUserById(this.deps, userId);
   }
 
+  /**
+   * Updates mutable user profile fields.
+   * @param {string} userId User id.
+   * @param {object} profileData Profile payload.
+   * @return {Promise<object>} Updated profile.
+   */
   async updateUserProfile(userId, profileData) {
-    const user = await User.findById(userId);
-    if (!user) {
-      const error = new Error('User not found');
-      error.code = 'USER_NOT_FOUND';
-      throw error;
-    }
-
-    const updatableFields = ['name', 'phoneNumber', 'avatarUrl', 'bio'];
-    updatableFields.forEach((field) => {
-      if (Object.prototype.hasOwnProperty.call(profileData, field)) {
-        user[field] = profileData[field];
-      }
-    });
-
-    if (Object.prototype.hasOwnProperty.call(profileData, 'dateOfBirth')) {
-      user.dateOfBirth = profileData.dateOfBirth ? new Date(profileData.dateOfBirth) : null;
-    }
-
-    if (profileData.preferences) {
-      const currentPreferences = user.preferences?.toObject ? user.preferences.toObject() : (user.preferences || {});
-      user.preferences = {
-        ...currentPreferences,
-        ...profileData.preferences,
-      };
-    }
-
-    await user.save();
-
-    const profile = this.buildUserProfile(user);
-    await this.cacheUserProfile(profile);
-
-    return profile;
+    return profileOperations.updateUserProfile(this.deps, userId, profileData);
   }
 
+  /**
+   * Exchanges refresh token for new token pair.
+   * @param {string} refreshToken Refresh token.
+   * @return {Promise<{accessToken: string, refreshToken: string}>} Token pair.
+   */
   async refreshUserToken(refreshToken) {
-    try {
-      const decoded = verifyRefreshToken(refreshToken);
-      const user = await User.findById(decoded.userId);
-
-      if (!user || !user.refreshTokens.some((rt) => rt.token === refreshToken)) {
-        const error = new Error('Invalid refresh token');
-        error.code = 'INVALID_REFRESH_TOKEN';
-        throw error;
-      }
-
-      const tokens = generateTokens({
-        userId: user._id.toString(),
-        email: user.email,
-        role: user.role,
-      });
-
-      user.refreshTokens = user.refreshTokens.filter((rt) => rt.token !== refreshToken);
-      user.refreshTokens.push({ token: tokens.refreshToken });
-      await user.save();
-
-      return {
-        accessToken: tokens.accessToken,
-        refreshToken: tokens.refreshToken,
-      };
-    } catch (error) {
-      const err = new Error('Invalid refresh token');
-      err.code = 'INVALID_REFRESH_TOKEN';
-      throw err;
-    }
+    return authOperations.refreshUserToken(this.deps, refreshToken);
   }
 
+  /**
+   * Logs out user by removing refresh token.
+   * @param {string} refreshToken Refresh token.
+   * @return {Promise<boolean>} True when logout succeeds.
+   */
   async logoutUser(refreshToken) {
-    try {
-      const decoded = verifyRefreshToken(refreshToken);
-      const user = await User.findById(decoded.userId);
-
-      if (user) {
-        user.refreshTokens = user.refreshTokens.filter((rt) => rt.token !== refreshToken);
-        await user.save();
-      }
-
-      return true;
-    } catch (error) {
-      return false;
-    }
+    return authOperations.logoutUser(this.deps, refreshToken);
   }
 
+  /**
+   * Adds one user address.
+   * @param {string} userId User id.
+   * @param {object} addressData Address payload.
+   * @return {Promise<object>} New address.
+   */
   async addAddress(userId, addressData) {
-    const user = await User.findById(userId);
-    if (!user) {
-      const error = new Error('User not found');
-      error.code = 'USER_NOT_FOUND';
-      throw error;
-    }
-
-    if (addressData.isDefault) {
-      user.addresses.forEach((address) => {
-        address.isDefault = false;
-      });
-    } else if (user.addresses.length === 0) {
-      addressData.isDefault = true;
-    }
-
-    user.addresses.push(addressData);
-    await user.save();
-
-    await this.cacheUserProfile(this.buildUserProfile(user));
-
-    const newAddress = user.addresses[user.addresses.length - 1];
-    return this.buildAddress(newAddress);
+    return addressOperations.addAddress(this.deps, userId, addressData);
   }
 
+  /**
+   * Updates one existing address.
+   * @param {string} userId User id.
+   * @param {string} addressId Address id.
+   * @param {object} addressData Address payload.
+   * @return {Promise<object>} Updated address.
+   */
   async updateAddress(userId, addressId, addressData) {
-    const user = await User.findById(userId);
-    if (!user) {
-      const error = new Error('User not found');
-      error.code = 'USER_NOT_FOUND';
-      throw error;
-    }
-
-    const address = user.addresses.id(addressId);
-    if (!address) {
-      const error = new Error('Address not found');
-      error.code = 'ADDRESS_NOT_FOUND';
-      throw error;
-    }
-
-    if (addressData.isDefault && !address.isDefault) {
-      user.addresses.forEach((existingAddress) => {
-        existingAddress.isDefault = false;
-      });
-    }
-
-    Object.assign(address, addressData);
-    await user.save();
-
-    await this.cacheUserProfile(this.buildUserProfile(user));
-
-    return this.buildAddress(address);
+    return addressOperations.updateAddress(this.deps, userId, addressId, addressData);
   }
 
+  /**
+   * Removes one address.
+   * @param {string} userId User id.
+   * @param {string} addressId Address id.
+   * @return {Promise<boolean>} True when removed.
+   */
   async removeAddress(userId, addressId) {
-    const user = await User.findById(userId);
-    if (!user) {
-      const error = new Error('User not found');
-      error.code = 'USER_NOT_FOUND';
-      throw error;
-    }
-
-    const address = user.addresses.id(addressId);
-    if (!address) {
-      const error = new Error('Address not found');
-      error.code = 'ADDRESS_NOT_FOUND';
-      throw error;
-    }
-
-    const wasDefault = address.isDefault;
-    user.addresses.pull(addressId);
-
-    if (wasDefault && user.addresses.length > 0) {
-      user.addresses[0].isDefault = true;
-    }
-
-    await user.save();
-    await this.cacheUserProfile(this.buildUserProfile(user));
-
-    return true;
+    return addressOperations.removeAddress(this.deps, userId, addressId);
   }
 
+  /**
+   * Marks one address as default.
+   * @param {string} userId User id.
+   * @param {string} addressId Address id.
+   * @return {Promise<boolean>} True when updated.
+   */
   async setDefaultAddress(userId, addressId) {
-    const user = await User.findById(userId);
-    if (!user) {
-      const error = new Error('User not found');
-      error.code = 'USER_NOT_FOUND';
-      throw error;
-    }
-
-    const selectedAddress = user.addresses.id(addressId);
-    if (!selectedAddress) {
-      const error = new Error('Address not found');
-      error.code = 'ADDRESS_NOT_FOUND';
-      throw error;
-    }
-
-    user.addresses.forEach((address) => {
-      address.isDefault = address._id.toString() === addressId;
-    });
-
-    await user.save();
-    await this.cacheUserProfile(this.buildUserProfile(user));
-
-    return true;
+    return addressOperations.setDefaultAddress(this.deps, userId, addressId);
   }
 }
 
