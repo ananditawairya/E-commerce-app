@@ -91,7 +91,13 @@ const createRateLimiter = (options) => {
     },
     skip: (req) => {
       // Skip rate limiting for health checks
-      return req.path === '/health';
+      if (req.path === '/health') {
+        return true;
+      }
+      if (typeof options.skip === 'function') {
+        return options.skip(req);
+      }
+      return false;
     }
   };
 
@@ -440,6 +446,8 @@ const startServer = async () => {
     max: 200,
     message: 'Too many requests, please try again later.',
     prefix: 'general',
+    // GraphQL has its own limiter; avoid double-throttling.
+    skip: (req) => req.path === '/graphql' || req.path.startsWith('/graphql/'),
   });
 
   const authExecutor = createExecutor(`${AUTH_SERVICE_URL}/graphql`, 'auth');
