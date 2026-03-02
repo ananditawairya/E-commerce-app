@@ -1,14 +1,14 @@
 // backend/shared/middleware/auth.js
-// CHANGE: Shared authentication middleware for consistent token verification
+// Shared authentication middleware for consistent token verification
 
 const axios = require('axios');
 
-// CHANGE: Use REST API URL exclusively
+// Use REST API URL exclusively
 const AUTH_API_URL = process.env.AUTH_API_URL || 'http://localhost:4001/api/users';
 
 const verifyToken = async (token, correlationId) => {
   try {
-    // CHANGE: Direct REST API call only
+    // Direct REST API call only
     const response = await axios.post(
       `${AUTH_API_URL}/verify-token`,
       { token },
@@ -45,7 +45,7 @@ const authenticate = async (context) => {
 
   const token = authHeader.replace('Bearer ', '');
   
-  // CHANGE: Add token format validation
+  // Add token format validation
   if (!token || token.length < 20) {
     throw new Error('Invalid token format');
   }

@@ -1,5 +1,5 @@
 // backend/shared/saga/SagaCoordinator.js
-// CHANGE: Accept mongoose instance in constructor
+// Accept mongoose instance in constructor
 
 const createSagaModel = require('./Saga');
 const KafkaProducer = require('../kafka/KafkaProducer');
@@ -13,7 +13,7 @@ const {
 } = require('../kafka/events/SagaEvents');
 
 class SagaCoordinator {
-  // CHANGE: Accept mongoose instance to ensure same connection
+  // Accept mongoose instance to ensure same connection
   constructor(serviceName, mongooseInstance) {
     if (!mongooseInstance) {
       throw new Error('Mongoose instance is required for SagaCoordinator');
@@ -33,7 +33,7 @@ class SagaCoordinator {
     await this.producer.disconnect();
   }
 
-  // CHANGE: Validate MongoDB connection before operations
+  // Validate MongoDB connection before operations
   _ensureMongoConnection() {
     if (this.mongoose.connection.readyState !== 1) {
       throw new Error('MongoDB connection not ready. Current state: ' + this.mongoose.connection.readyState);
@@ -45,7 +45,7 @@ class SagaCoordinator {
   }
 
   async startSaga(sagaType, payload, correlationId) {
-    // CHANGE: Check MongoDB connection before starting saga
+    // Check MongoDB connection before starting saga
     this._ensureMongoConnection();
     
     const sagaId = `${sagaType}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
@@ -55,14 +55,14 @@ class SagaCoordinator {
       throw new Error(`Saga definition not found for type: ${sagaType}`);
     }
 
-    // CHANGE: Create saga record with retry logic
+    // Create saga record with retry logic
     let saga;
     const maxRetries = 3;
     let lastError;
     
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
-        // CHANGE: Use this.Saga instead of imported Saga
+        // Use this.Saga instead of imported Saga
         saga = new this.Saga({
           sagaId,
           sagaType,
@@ -83,7 +83,7 @@ class SagaCoordinator {
         console.error(`❌ Saga creation attempt ${attempt + 1}/${maxRetries} failed:`, error.message);
         
         if (attempt < maxRetries - 1) {
-          // CHANGE: Wait before retry
+          // Wait before retry
           await new Promise(resolve => setTimeout(resolve, 1000 * (attempt + 1)));
         }
       }
@@ -93,7 +93,7 @@ class SagaCoordinator {
       throw new Error(`Failed to create saga after ${maxRetries} attempts: ${lastError.message}`);
     }
 
-    // CHANGE: Publish saga started event
+    // Publish saga started event
     const event = createSagaStartedEvent(sagaId, sagaType, correlationId, payload);
     const message = this.producer.buildMessage(sagaId, event, correlationId);
     
@@ -108,10 +108,10 @@ class SagaCoordinator {
   }
 
   async completeStep(sagaId, stepName, stepData, correlationId) {
-    // CHANGE: Check MongoDB connection
+    // Check MongoDB connection
     this._ensureMongoConnection();
     
-    // CHANGE: Use this.Saga instead of imported Saga
+    // Use this.Saga instead of imported Saga
     const saga = await this.Saga.findOne({ sagaId });
     if (!saga) {
       throw new Error(`Saga not found: ${sagaId}`);
@@ -159,10 +159,10 @@ class SagaCoordinator {
   }
 
   async failStep(sagaId, stepName, error, correlationId) {
-    // CHANGE: Check MongoDB connection
+    // Check MongoDB connection
     this._ensureMongoConnection();
     
-    // CHANGE: Use this.Saga instead of imported Saga
+    // Use this.Saga instead of imported Saga
     const saga = await this.Saga.findOne({ sagaId });
     if (!saga) {
       throw new Error(`Saga not found: ${sagaId}`);
@@ -196,10 +196,10 @@ class SagaCoordinator {
   }
 
   async compensate(sagaId, correlationId) {
-    // CHANGE: Check MongoDB connection
+    // Check MongoDB connection
     this._ensureMongoConnection();
     
-    // CHANGE: Use this.Saga instead of imported Saga
+    // Use this.Saga instead of imported Saga
     const saga = await this.Saga.findOne({ sagaId });
     if (!saga) {
       throw new Error(`Saga not found: ${sagaId}`);
@@ -255,10 +255,10 @@ class SagaCoordinator {
   }
 
   async getSagaStatus(sagaId) {
-    // CHANGE: Check MongoDB connection
+    // Check MongoDB connection
     this._ensureMongoConnection();
     
-    // CHANGE: Use this.Saga instead of imported Saga
+    // Use this.Saga instead of imported Saga
     const saga = await this.Saga.findOne({ sagaId });
     if (!saga) {
       throw new Error(`Saga not found: ${sagaId}`);

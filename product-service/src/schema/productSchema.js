@@ -31,6 +31,13 @@ const typeDefs = gql`
     updatedAt: String!
   }
 
+  type SearchSuggestion {
+    text: String!
+    category: String
+    score: Float
+    source: String!
+  }
+
   enum ProductSortBy {
     RELEVANCE
     NEWEST
@@ -83,6 +90,11 @@ const typeDefs = gql`
     product(id: ID!): Product
     sellerProducts: [Product!]!
     categories: [String!]!
+    searchSuggestions(
+      query: String!
+      categories: [String!]
+      limit: Int
+    ): [SearchSuggestion!]!
   }
 
   type Mutation {

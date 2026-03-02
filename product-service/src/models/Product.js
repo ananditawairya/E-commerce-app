@@ -109,16 +109,16 @@ productSchema.pre('save', function(next) {
   next();
 });
 
-// CHANGE: Configure toJSON to map _id to id for both Product and Variant
+// Configure toJSON to map _id to id for both Product and Variant
 productSchema.set('toJSON', {
   virtuals: true,
   transform: (doc, ret) => {
-    // CHANGE: Map MongoDB _id to GraphQL id field
+    // Map MongoDB _id to GraphQL id field
     ret.id = ret._id;
     delete ret._id;
     delete ret.__v;
     
-    // CHANGE: Transform variants array to include id field
+    // Transform variants array to include id field
     if (ret.variants && Array.isArray(ret.variants)) {
       ret.variants = ret.variants.map(variant => {
         const transformedVariant = { ...variant };
@@ -132,7 +132,7 @@ productSchema.set('toJSON', {
   }
 });
 
-// CHANGE: Configure toObject similarly for consistency
+// Configure toObject similarly for consistency
 productSchema.set('toObject', {
   virtuals: true,
   transform: (doc, ret) => {

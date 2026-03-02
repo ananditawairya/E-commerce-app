@@ -1,5 +1,5 @@
 // backend/auth-service/src/kafka/kafkaProducer.js
-// CHANGE: Use shared Kafka producer with service-specific event handlers
+// Use shared Kafka producer with service-specific event handlers
 
 const KafkaProducer = require('../../../shared/kafka/KafkaProducer');
 const { TOPICS, createUserRegisteredEvent } = require('../../../shared/kafka/events/UserEvents');
@@ -21,7 +21,7 @@ class AuthServiceProducer {
     const event = createUserRegisteredEvent(user);
     const message = this.producer.buildMessage(user.id, event, correlationId);
 
-    // CHANGE: Non-critical event - registration succeeds even if Kafka fails
+    // Non-critical event - registration succeeds even if Kafka fails
     return this.producer.publish(TOPICS.USER_REGISTERED, message, {
       critical: false,
       correlationId,

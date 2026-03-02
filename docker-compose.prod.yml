@@ -69,6 +69,33 @@ services:
       timeout: 5s
       retries: 5
 
+  redis:
+    image: redis:7.2-alpine
+    container_name: ecommerce-redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    networks:
+      - ecommerce-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.10
+    container_name: ecommerce-meilisearch
+    restart: unless-stopped
+    environment:
+      MEILI_ENV: production
+      MEILI_NO_ANALYTICS: "true"
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-}
+    volumes:
+      - meili_data:/meili_data
+    networks:
+      - ecommerce-network
+
   ollama:
     image: ollama/ollama:latest
     container_name: ollama
@@ -131,6 +158,10 @@ services:
         condition: service_healthy
       ollama:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+      meilisearch:
+        condition: service_started
     environment:
       NODE_ENV: development
       NODE_PATH: /app/product-service/node_modules
@@ -148,6 +179,12 @@ services:
       OLLAMA_TIMEOUT_MS: 3500
       SEARCH_SEMANTIC_MAX_PRODUCTS: 800
       SEARCH_SEMANTIC_MIN_SCORE: 0.18
+      PRODUCT_REDIS_URL: redis://redis:6379
+      PRODUCT_SEARCH_ENGINE_ENABLED: ${PRODUCT_SEARCH_ENGINE_ENABLED:-false}
+      PRODUCT_SEARCH_ENGINE_TYPE: meilisearch
+      MEILI_HOST: http://meilisearch:7700
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-}
+      MEILI_INDEX_NAME: products
     networks:
       - ecommerce-network
 
@@ -221,6 +258,8 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     ports:
       - "4000:4000"
     environment:
@@ -230,6 +269,7 @@ services:
       PRODUCT_SERVICE_URL: http://product-service:4002
       ORDER_SERVICE_URL: http://order-service:4003
       AI_SERVICE_URL: http://ai-service:4004
+      GATEWAY_REDIS_URL: redis://redis:6379
       INTERNAL_JWT_SECRET: ${INTERNAL_JWT_SECRET:-your-internal-service-secret-here}
       JWT_SECRET: ${JWT_SECRET:-your-super-secret-jwt-key-here}
     networks:
@@ -280,6 +320,8 @@ volumes:
   zookeeper_log:
   kafka_data:
   mongodb_data:
+  redis_data:
+  meili_data:
   ollama_data:
   prometheus_data:
   grafana_data:

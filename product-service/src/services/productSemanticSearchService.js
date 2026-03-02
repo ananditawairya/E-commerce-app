@@ -198,6 +198,59 @@ class ProductSemanticSearchService {
     };
   }
 
+  /**
+   * Scores a known candidate product set using semantic similarity.
+   * @param {{
+   *   search: string,
+   *   candidateProductIds: string[],
+   * }} params Candidate scoring params.
+   * @return {Promise<Map<string, number>>} Product id -> semantic score map.
+   */
+  async scoreCandidateProducts({ search, candidateProductIds }) {
+    const cleanSearch = sanitizeText(search);
+    if (
+      !cleanSearch
+      || !this.isEnabled()
+      || !Array.isArray(candidateProductIds)
+      || candidateProductIds.length === 0
+    ) {
+      return new Map();
+    }
+
+    const normalizedIds = [...new Set(
+      candidateProductIds
+        .filter((value) => typeof value === 'string')
+        .map((value) => value.trim())
+        .filter(Boolean)
+    )];
+    if (normalizedIds.length === 0) {
+      return new Map();
+    }
+
+    const queryVector = await localEmbeddingService.embedText(cleanSearch);
+    if (!queryVector) {
+      return new Map();
+    }
+
+    const embeddings = await ProductSearchEmbedding.find({
+      productId: { $in: normalizedIds },
+      isActive: true,
+      embeddingModel: localEmbeddingService.getModelName(),
+    })
+      .select('+vector productId')
+      .lean();
+
+    const scores = new Map();
+    for (const embedding of embeddings) {
+      const score = cosineSimilarityNormalized(queryVector, embedding.vector);
+      if (Number.isFinite(score)) {
+        scores.set(embedding.productId, score);
+      }
+    }
+
+    return scores;
+  }
+
   async searchProducts({
     search,
     category,

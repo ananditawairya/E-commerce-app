@@ -1,5 +1,5 @@
 // backend/shared/kafka/events/SagaEvents.js
-// CHANGE: Centralized saga event schemas for orchestration and compensation
+// Centralized saga event schemas for orchestration and compensation
 
 const TOPICS = {
   SAGA_STARTED: 'saga.started',

@@ -45,6 +45,10 @@ jobs:
             export JWT_REFRESH_SECRET='${{ secrets.JWT_REFRESH_SECRET }}'
             export INTERNAL_JWT_SECRET='${{ secrets.INTERNAL_JWT_SECRET }}'
             export GEMINI_API_KEY='${{ secrets.GEMINI_API_KEY }}'
+            export MEILI_MASTER_KEY='${{ secrets.MEILI_MASTER_KEY }}'
+            export PRODUCT_SEARCH_ENGINE_ENABLED='${{ vars.PRODUCT_SEARCH_ENGINE_ENABLED || 'true' }}'
+            export SEARCH_SEMANTIC_ENABLED='${{ vars.SEARCH_SEMANTIC_ENABLED || 'true' }}'
+            export OLLAMA_EMBED_MODEL='${{ vars.OLLAMA_EMBED_MODEL || 'embeddinggemma' }}'
             export DEPLOY_BRANCH='${{ github.ref_name }}'
             chmod +x scripts/deploy.sh
             ./scripts/deploy.sh ${{ inputs.skip_build == true && '--skip-build' || '' }} ${{ inputs.seed_db == true && '--seed' || '' }}

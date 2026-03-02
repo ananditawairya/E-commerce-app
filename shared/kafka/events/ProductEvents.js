@@ -1,5 +1,5 @@
 // backend/shared/kafka/events/ProductEvents.js
-// CHANGE: Complete product event schemas
+// Complete product event schemas
 
 const TOPICS = {
   PRODUCT_CREATED: 'product.created',
@@ -7,7 +7,7 @@ const TOPICS = {
   STOCK_DEDUCTED: 'product.stock.deducted',
 };
 
-// CHANGE: Add ProductCreated event schema
+// Add ProductCreated event schema
 const createProductCreatedEvent = (product) => ({
   eventType: 'ProductCreated',
   payload: {
@@ -26,7 +26,7 @@ const createProductCreatedEvent = (product) => ({
   },
 });
 
-// CHANGE: Add ProductUpdated event schema
+// Add ProductUpdated event schema
 const createProductUpdatedEvent = (product) => ({
   eventType: 'ProductUpdated',
   payload: {

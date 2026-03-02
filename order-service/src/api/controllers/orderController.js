@@ -1,5 +1,5 @@
 // backend/order-service/src/api/controllers/orderController.js
-// CHANGE: Pass correlation ID to service layer for Kafka events
+// Pass correlation ID to service layer for Kafka events
 
 const orderService = require('../../services/orderService');
 
@@ -106,7 +106,7 @@ class OrderController {
       totalAmount,
     }, 'Creating order');
 
-    // CHANGE: Pass correlation ID to service for Kafka event (returns array)
+    // Pass correlation ID to service for Kafka event (returns array)
     const orders = await orderService.createOrder(
       userId,
       { items, totalAmount, shippingAddress },
@@ -120,7 +120,7 @@ class OrderController {
       totalAmount,
     }, 'Orders created successfully');
 
-    // CHANGE: Return array of orders
+    // Return array of orders
     res.status(201).json(orders);
   } catch (error) {
     next(error);
@@ -184,7 +184,7 @@ class OrderController {
 
       req.log.info({ orderId: id, sellerId, status }, 'Updating order status');
 
-      // CHANGE: Pass correlation ID to service for Kafka event
+      // Pass correlation ID to service for Kafka event
       const order = await orderService.updateOrderStatus(id, sellerId, status, req.correlationId);
 
       req.log.info({ orderId: id, sellerId, status }, 'Order status updated');
@@ -195,7 +195,7 @@ class OrderController {
     }
   }
 
-  // CHANGE: Add cancel order controller method
+  // Add cancel order controller method
   async cancelOrder(req, res, next) {
     try {
       const { id } = req.params;

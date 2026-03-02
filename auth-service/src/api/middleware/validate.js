@@ -19,7 +19,7 @@ const validate = (schema, property = 'body') => {
         message: detail.message
       }));
 
-      // CHANGE: Use req.log.error instead of logger.warn (logger middleware only provides info/error methods)
+      // Use req.log.error instead of logger.warn (logger middleware only provides info/error methods)
       if (req.log) {
         req.log.error({
           property,

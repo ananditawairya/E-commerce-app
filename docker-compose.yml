@@ -31,7 +31,7 @@ services:
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      # CHANGE: Configure dual listeners - INTERNAL for Docker network, EXTERNAL for host
+      # Configure dual listeners - INTERNAL for Docker network, EXTERNAL for host
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
       KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_INTERNAL://0.0.0.0:9093
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,PLAINTEXT_INTERNAL://kafka:9093
@@ -63,7 +63,7 @@ services:
       - "8080:8080"
     environment:
       KAFKA_CLUSTERS_0_NAME: ecommerce-cluster
-      # CHANGE: Use internal listener (kafka:9093) for Docker network communication
+      # Use internal listener (kafka:9093) for Docker network communication
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9093
       KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
       KAFKA_CLUSTERS_0_METRICS_PORT: 9997
@@ -92,6 +92,35 @@ services:
       timeout: 5s
       retries: 5
 
+  redis:
+    image: redis:7.2-alpine
+    container_name: ecommerce-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - ecommerce-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.10
+    container_name: ecommerce-meilisearch
+    ports:
+      - "7700:7700"
+    environment:
+      MEILI_ENV: development
+      MEILI_NO_ANALYTICS: "true"
+      MEILI_MASTER_KEY: ${MEILI_MASTER_KEY:-}
+    volumes:
+      - meili_data:/meili_data
+    networks:
+      - ecommerce-network
+
   ollama:
     image: ollama/ollama:latest
     container_name: ollama
@@ -115,4 +144,6 @@ volumes:
   zookeeper_log:
   kafka_data:
   mongodb_data:
+  redis_data:
+  meili_data:
   ollama_data:

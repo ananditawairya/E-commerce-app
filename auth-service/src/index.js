@@ -1,5 +1,5 @@
 // backend/auth-service/src/index.js
-// CHANGE: Added GraphQL security and enhanced gateway integration
+// Added GraphQL security and enhanced gateway integration
 
 require('dotenv').config();
 const express = require('express');
@@ -26,11 +26,11 @@ const { middleware: metricsMiddleware, endpoint: metricsEndpoint } = createMetri
 app.use(metricsMiddleware);
 app.get('/metrics', metricsEndpoint);
 
-// CHANGE: GraphQL Authentication Middleware to prevent direct access
+// GraphQL Authentication Middleware to prevent direct access
 const graphqlAuthMiddleware = (req, res, next) => {
   const internalToken = req.headers['x-internal-gateway-token'];
 
-  // CHANGE: Verify internal gateway token for service-to-service auth
+  // Verify internal gateway token for service-to-service auth
   if (!internalToken) {
     return res.status(403).json({
       error: 'Direct GraphQL access forbidden. Use API Gateway at http://localhost:4000/graphql'
@@ -38,10 +38,10 @@ const graphqlAuthMiddleware = (req, res, next) => {
   }
 
   try {
-    // CHANGE: Verify internal gateway token
+    // Verify internal gateway token
     jwt.verify(internalToken, process.env.INTERNAL_JWT_SECRET || 'internal-secret');
 
-    // CHANGE: Allow request to proceed - user auth will be handled by resolvers
+    // Allow request to proceed - user auth will be handled by resolvers
     next();
   } catch (error) {
     return res.status(403).json({ error: 'Invalid internal gateway token' });
@@ -51,7 +51,7 @@ const graphqlAuthMiddleware = (req, res, next) => {
 
 // Middleware
 app.use(cors({
-  // CHANGE: Only allow gateway origin for GraphQL
+  // Only allow gateway origin for GraphQL
   origin: process.env.GATEWAY_URL || 'http://localhost:4000',
   credentials: true
 }));
@@ -65,7 +65,7 @@ app.use('/api/users', userRoutes);
 // Error handling middleware
 app.use(errorHandler);
 
-// CHANGE: Health check endpoint for gateway monitoring
+// Health check endpoint for gateway monitoring
 app.get('/health', (req, res) => {
   res.json({
     status: 'healthy',
@@ -76,15 +76,15 @@ app.get('/health', (req, res) => {
   });
 });
 
-// CHANGE: Enable introspection in development for gateway schema stitching
+// Enable introspection in development for gateway schema stitching
 const isDevelopment = process.env.NODE_ENV !== 'production';
 
 // Apollo Server with security
 const server = new ApolloServer({
   typeDefs,
   resolvers,
-  introspection: isDevelopment, // CHANGE: Enable introspection in development
-  playground: false,   // CHANGE: Keep playground disabled for security
+  introspection: isDevelopment, // Enable introspection in development
+  playground: false,   // Keep playground disabled for security
   context: ({ req }) => ({
     req,
     correlationId: req.correlationId,
@@ -137,13 +137,13 @@ const startServer = async () => {
 
   await server.start();
 
-  // CHANGE: Apply auth middleware before GraphQL endpoint
+  // Apply auth middleware before GraphQL endpoint
   app.use('/graphql', graphqlAuthMiddleware);
   server.applyMiddleware({ app, path: '/graphql' });
 
   const PORT = process.env.PORT || 4001;
 
-  // CHANGE: Bind to localhost only for security
+  // Bind to localhost only for security
   app.listen(PORT, '0.0.0.0', () => {
     appLogger.info({
       port: PORT,

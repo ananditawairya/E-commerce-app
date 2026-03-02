@@ -1,5 +1,5 @@
 // backend/order-service/src/api/middleware/errorHandler.js
-// CHANGE: Add saga-specific error codes
+// Add saga-specific error codes
 
 const errorHandler = (err, req, res, next) => {
   req.log.error({
@@ -16,7 +16,7 @@ const errorHandler = (err, req, res, next) => {
     'CART_EMPTY': 400,
     'INSUFFICIENT_STOCK': 409,
     'CANNOT_CANCEL_ORDER': 400,
-    // CHANGE: Add saga error codes
+    // Add saga error codes
     'ORDER_CREATION_FAILED': 500,
     'SAGA_NOT_FOUND': 404,
     'SAGA_STEP_FAILED': 500,

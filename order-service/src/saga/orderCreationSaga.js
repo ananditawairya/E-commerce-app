@@ -1,11 +1,11 @@
 // backend/order-service/src/saga/orderCreationSaga.js
-// CHANGE: Enhanced validation with better error handling for missing products
+// Enhanced validation with better error handling for missing products
 
 const axios = require('axios');
 
 const PRODUCT_API_URL = process.env.PRODUCT_API_URL || 'http://localhost:4002/api/products';
 
-// CHANGE: Group items by seller for coordinated processing
+// Group items by seller for coordinated processing
 const groupItemsBySeller = (items) => {
   const sellerGroups = new Map();
 
@@ -29,9 +29,9 @@ const orderCreationSaga = {
 
         const validationResults = [];
 
-        // CHANGE: Validate each item exists and has sufficient stock
+        // Validate each item exists and has sufficient stock
         for (const item of payload.items) {
-          // CHANGE: Log the exact variant being validated
+          // Log the exact variant being validated
           console.log(`🔍 Validating: Product ${item.productId}, Variant ${item.variantId}, Quantity ${item.quantity}`);
           try {
             const response = await axios.get(
@@ -47,7 +47,7 @@ const orderCreationSaga = {
 
             const stockInfo = response.data;
 
-             // CHANGE: Verify the response is for the correct variant
+             // Verify the response is for the correct variant
             if (item.variantId && stockInfo.variantId !== item.variantId) {
               throw new Error(
                 `Variant mismatch: requested ${item.variantId}, got ${stockInfo.variantId}`
@@ -72,7 +72,7 @@ const orderCreationSaga = {
                         
             console.log(`✅ Validated: ${item.productName}${item.variantId ? ` (${item.variantName})` : ''} - ${item.quantity} units available`);
           } catch (error) {
-            // CHANGE: Enhanced error handling for 404 and other errors
+            // Enhanced error handling for 404 and other errors
             if (error.response?.status === 404) {
               const productInfo = item.variantId
                 ? `Product ${item.productId} variant ${item.variantId}`
@@ -82,7 +82,7 @@ const orderCreationSaga = {
               );
             }
 
-            // CHANGE: Handle network/timeout errors
+            // Handle network/timeout errors
             if (error.code === 'ECONNREFUSED') {
               throw new Error(
                 `Product service unavailable. Cannot validate ${item.productName}.`
@@ -95,7 +95,7 @@ const orderCreationSaga = {
               );
             }
 
-            // CHANGE: Re-throw with context
+            // Re-throw with context
             console.error(`❌ Validation failed for ${item.productId} variant ${item.variantId}:`, error.message);
             throw new Error(
               `Validation failed for ${item.productName}${item.variantId ? ` (${item.variantName})` : ''}: ${error.response?.data?.message || error.message}`
@@ -106,7 +106,7 @@ const orderCreationSaga = {
         return { validationResults };
       },
       compensate: async (payload, stepData, correlationId) => {
-        // CHANGE: No compensation needed for validation step
+        // No compensation needed for validation step
         console.log(`ℹ️  No compensation needed for validation step`);
       },
     },
@@ -116,7 +116,7 @@ const orderCreationSaga = {
       execute: async (payload, correlationId) => {
         console.log(`✅ Confirming order: ${payload.orderId}`);
 
-        // CHANGE: Order confirmation logic
+        // Order confirmation logic
         const confirmedAt = new Date().toISOString();
         console.log(`📡 Stock deduction will be handled by Kafka OrderCreated event`);
         return {
@@ -127,7 +127,7 @@ const orderCreationSaga = {
       compensate: async (payload, stepData, correlationId) => {
         console.log(`🔄 Cancelling order: ${payload.orderId}`);
 
-        // CHANGE: Order cancellation logic (update order status to cancelled)
+        // Order cancellation logic (update order status to cancelled)
         // This is handled in the order service's cancelOrder method
       },
     },
@@ -139,10 +139,10 @@ const orderCreationSaga = {
         const sellerGroups = groupItemsBySeller(payload.items);
         const notifications = [];
 
-        // CHANGE: Send notification to each seller
+        // Send notification to each seller
         for (const [sellerId, items] of sellerGroups.entries()) {
           try {
-            // CHANGE: Mock notification (replace with actual notification service)
+            // Mock notification (replace with actual notification service)
             const notification = {
               sellerId,
               orderId: payload.orderId,
@@ -161,7 +161,7 @@ const orderCreationSaga = {
 
             console.log(`✅ Notified seller: ${sellerId} (${items.length} items)`);
           } catch (error) {
-            // CHANGE: Notification failure is non-critical, log and continue
+            // Notification failure is non-critical, log and continue
             console.warn(`⚠️  Failed to notify seller ${sellerId}:`, error.message);
           }
         }
@@ -171,10 +171,10 @@ const orderCreationSaga = {
       compensate: async (payload, stepData, correlationId) => {
         console.log(`🔄 Sending cancellation notifications for order: ${payload.orderId}`);
 
-        // CHANGE: Send cancellation notifications to sellers
+        // Send cancellation notifications to sellers
         for (const notification of stepData.notifications) {
           try {
-            // CHANGE: Mock cancellation notification
+            // Mock cancellation notification
             console.log(`✅ Sent cancellation notice to seller: ${notification.sellerId}`);
           } catch (error) {
             console.warn(`⚠️  Failed to send cancellation notice to seller ${notification.sellerId}:`, error.message);

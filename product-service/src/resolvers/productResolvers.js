@@ -6,6 +6,30 @@ const { formatDescriptionToBullets } = require('../utils/descriptionFormatter');
 
 const API_BASE_URL = process.env.PRODUCT_API_URL || 'http://localhost:4002/api/products';
 
+/**
+ * Normalizes id-like values into GraphQL ID strings.
+ * @param {unknown} value Raw id value.
+ * @return {string|null} Normalized ID or null when unavailable.
+ */
+function normalizeId(value) {
+  if (typeof value === 'string' && value.trim()) {
+    return value;
+  }
+
+  if (typeof value === 'number') {
+    return String(value);
+  }
+
+  if (value && typeof value.toString === 'function') {
+    const stringValue = value.toString();
+    return typeof stringValue === 'string' && stringValue.trim()
+      ? stringValue
+      : null;
+  }
+
+  return null;
+}
+
 const resolvers = {
   Query: {
     products: async (
@@ -108,6 +132,24 @@ const resolvers = {
         throw new Error(error.response?.data?.message || error.message);
       }
     },
+
+    searchSuggestions: async (_, { query, categories, limit }, context) => {
+      try {
+        const response = await axios.get(`${API_BASE_URL}/search/suggestions`, {
+          params: {
+            query,
+            categories,
+            limit,
+          },
+          headers: {
+            'X-Correlation-ID': context.correlationId,
+          },
+        });
+        return response.data;
+      } catch (error) {
+        throw new Error(error.response?.data?.message || error.message);
+      }
+    },
   },
 
   Mutation: {
@@ -185,7 +227,7 @@ const resolvers = {
 
   Product: {
     // Defensive: handle both _id and id for products from .lean() or raw queries
-    id: (product) => product.id || product._id,
+    id: (product) => normalizeId(product.id) || normalizeId(product._id),
 
     variants: (product) => {
       return product.variants || [];
@@ -197,6 +239,12 @@ const resolvers = {
   },
 
   Variant: {
+    id: (variant) => (
+      normalizeId(variant.id)
+      || normalizeId(variant._id)
+      || normalizeId(variant.sku)
+    ),
+
     effectiveDescription: (variant, _, __, info) => {
       const product = info.path.prev && info.path.prev.key === 'variants'
         ? info.path.prev.prev.result

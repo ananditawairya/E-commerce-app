@@ -1,16 +1,16 @@
 // backend/order-service/src/resolvers/orderResolvers.js
-// CHANGE: Removed all legacy GraphQL inter-service calls, uses REST APIs exclusively
+// Removed all legacy GraphQL inter-service calls, uses REST APIs exclusively
 
 const { requireBuyer, requireSeller, authenticate } = require('../middleware/auth');
 const axios = require('axios');
 
-// CHANGE: Define resource-specific URLs from generic base for clarity
+// Define resource-specific URLs from generic base for clarity
 const ORDER_SERVICE_BASE = process.env.ORDER_API_URL || 'http://localhost:4003/api';
 const CART_API_URL = `${ORDER_SERVICE_BASE}/cart`;
 const ORDERS_API_URL = `${ORDER_SERVICE_BASE}/orders`;
 const PRODUCT_API_URL = process.env.PRODUCT_API_URL || 'http://localhost:4002/api/products';
 
-// CHANGE: Call REST API to get product stock (no legacy GraphQL query)
+// Call REST API to get product stock (no legacy GraphQL query)
 const getProductStock = async (productId, variantId, correlationId) => {
   try {
     const response = await axios.get(
@@ -20,7 +20,7 @@ const getProductStock = async (productId, variantId, correlationId) => {
         headers: {
           'X-Correlation-ID': correlationId,
         },
-        // CHANGE: Add timeout for resilience
+        // Add timeout for resilience
         timeout: 5000,
       }
     );
@@ -30,7 +30,7 @@ const getProductStock = async (productId, variantId, correlationId) => {
   }
 };
 
-// CHANGE: Call REST API to deduct stock (no legacy GraphQL mutation)
+// Call REST API to deduct stock (no legacy GraphQL mutation)
 const deductStock = async (productId, variantId, quantity, orderId, correlationId) => {
   try {
     await axios.post(
@@ -40,7 +40,7 @@ const deductStock = async (productId, variantId, quantity, orderId, correlationI
         headers: {
           'X-Correlation-ID': correlationId,
         },
-        // CHANGE: Add timeout for resilience
+        // Add timeout for resilience
         timeout: 10000,
       }
     );
@@ -79,7 +79,7 @@ const resolvers = {
       try {
         const user = await requireBuyer(context);
 
-        // CHANGE: Use CART_API_URL constant for clarity
+        // Use CART_API_URL constant for clarity
         const response = await axios.get(
           `${CART_API_URL}/${user.userId}`,
           {
@@ -98,7 +98,7 @@ const resolvers = {
       try {
         const user = await requireBuyer(context);
 
-        // CHANGE: Use ORDERS_API_URL constant for clarity
+        // Use ORDERS_API_URL constant for clarity
         const response = await axios.get(
           `${ORDERS_API_URL}/buyer/${user.userId}`,
           {
@@ -117,7 +117,7 @@ const resolvers = {
       try {
         const user = await requireSeller(context);
 
-        // CHANGE: Use ORDERS_API_URL constant for clarity
+        // Use ORDERS_API_URL constant for clarity
         const response = await axios.get(
           `${ORDERS_API_URL}/seller/${user.userId}`,
           {
@@ -155,7 +155,7 @@ const resolvers = {
       try {
         const user = await authenticate(context);
 
-        // CHANGE: Use ORDERS_API_URL constant for clarity
+        // Use ORDERS_API_URL constant for clarity
         const response = await axios.get(
           `${ORDERS_API_URL}/${id}`,
           {
@@ -202,10 +202,10 @@ const resolvers = {
       }
 
 
-        // CHANGE: Validate stock availability via REST API
+        // Validate stock availability via REST API
         const stockInfo = await getProductStock(productId, variantId, context.correlationId);
 
-        // CHANGE: Get current cart to check existing quantity
+        // Get current cart to check existing quantity
         const cartResponse = await axios.get(
           `${CART_API_URL}/${user.userId}`,
           {
@@ -224,7 +224,7 @@ const resolvers = {
         const totalRequestedQuantity = existingQuantity + quantity;
 
         if (totalRequestedQuantity > stockInfo.stock) {
-          // CHANGE: Improved error message with clearer guidance
+          // Improved error message with clearer guidance
           throw new Error(
             `Cannot add ${quantity} units. You already have ${existingQuantity} in cart. ` +
             `Product has ${stockInfo.stock} total stock. ` +
@@ -232,7 +232,7 @@ const resolvers = {
           );
         }
 
-        // CHANGE: Call REST API to add to cart
+        // Call REST API to add to cart
         const response = await axios.post(
           `${CART_API_URL}/${user.userId}/items`,
            { 
@@ -259,7 +259,7 @@ const resolvers = {
       try {
         const user = await requireBuyer(context);
 
-        // CHANGE: Validate stock availability when updating quantity
+        // Validate stock availability when updating quantity
         if (quantity > 0) {
           const stockInfo = await getProductStock(productId, variantId, context.correlationId);
 
@@ -271,7 +271,7 @@ const resolvers = {
           }
         }
 
-        // CHANGE: Call REST API to update cart item
+        // Call REST API to update cart item
         const response = await axios.put(
           `${CART_API_URL}/${user.userId}/items`,
           { productId, variantId, quantity },
@@ -291,7 +291,7 @@ const resolvers = {
       try {
         const user = await requireBuyer(context);
 
-        // CHANGE: Call REST API to remove from cart
+        // Call REST API to remove from cart
         const response = await axios.delete(
           `${CART_API_URL}/${user.userId}/items`,
           {
@@ -311,7 +311,7 @@ const resolvers = {
       try {
         const user = await requireBuyer(context);
 
-        // CHANGE: Call REST API to clear cart
+        // Call REST API to clear cart
         await axios.delete(
           `${CART_API_URL}/${user.userId}`,
           {
@@ -330,7 +330,7 @@ const resolvers = {
   try {
     const user = await requireBuyer(context);
 
-    // CHANGE: Get cart via REST API
+    // Get cart via REST API
     const cartResponse = await axios.get(
       `${CART_API_URL}/${user.userId}`,
       {
@@ -345,7 +345,7 @@ const resolvers = {
       throw new Error('Cart is empty');
     }
 
-    // CHANGE: Validate stock availability for all items via REST API
+    // Validate stock availability for all items via REST API
     const stockValidationPromises = cart.items.map(async (item) => {
       const stockInfo = await getProductStock(item.productId, item.variantId, context.correlationId);
 
@@ -382,7 +382,7 @@ const resolvers = {
       0
     );
 
-    // CHANGE: Create orders via REST API (returns array of orders)
+    // Create orders via REST API (returns array of orders)
     const orderResponse = await axios.post(
       `${ORDERS_API_URL}/${user.userId}`,
       {
@@ -403,7 +403,7 @@ const resolvers = {
       orderIds: orders.map(o => o.orderId) 
     }, 'Orders created, stock deduction will be processed via Kafka');
 
-    // CHANGE: Clear cart via REST API
+    // Clear cart via REST API
     await axios.delete(
       `${CART_API_URL}/${user.userId}`,
       {
@@ -413,7 +413,7 @@ const resolvers = {
       }
     );
 
-    // CHANGE: Return first order for backward compatibility (mobile expects single order)
+    // Return first order for backward compatibility (mobile expects single order)
     // In future, update mobile to handle multiple orders
     return orders[0];
   } catch (error) {
@@ -425,7 +425,7 @@ const resolvers = {
       try {
         const user = await requireSeller(context);
 
-        // CHANGE: Call REST API to update order status
+        // Call REST API to update order status
         const response = await axios.put(
           `${ORDERS_API_URL}/${orderId}/status`,
           { sellerId: user.userId, status },
@@ -441,12 +441,12 @@ const resolvers = {
       }
     },
 
-    // CHANGE: Add missing cancelOrder mutation resolver
+    // Add missing cancelOrder mutation resolver
     cancelOrder: async (_, { orderId }, context) => {
       try {
         const user = await requireSeller(context);
 
-        // CHANGE: Call REST API to cancel order
+        // Call REST API to cancel order
         const response = await axios.put(
           `${ORDERS_API_URL}/${orderId}/cancel`,
           { sellerId: user.userId },

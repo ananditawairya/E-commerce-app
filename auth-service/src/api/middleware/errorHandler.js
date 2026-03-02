@@ -1,15 +1,15 @@
 // backend/auth-service/src/api/middleware/errorHandler.js
-// CHANGE: Centralized error handling with standard HTTP status codes
+// Centralized error handling with standard HTTP status codes
 
 const errorHandler = (err, req, res, next) => {
-  // CHANGE: Log error with correlation ID
+  // Log error with correlation ID
   req.log.error({
     error: err.message,
     stack: err.stack,
     code: err.code,
   }, 'Request error');
 
-  // CHANGE: Map error codes to HTTP status codes
+  // Map error codes to HTTP status codes
   const statusCodeMap = {
     'USER_EXISTS': 409,
     'INVALID_ROLE': 400,

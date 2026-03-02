@@ -1,5 +1,5 @@
 // backend/shared/kafka/KafkaConsumer.js
-// CHANGE: Generic consumer with dead letter queue support
+// Generic consumer with dead letter queue support
 
 const KafkaClient = require('./KafkaClient');
 
@@ -32,7 +32,7 @@ class KafkaConsumer {
     console.log(`🔌 Kafka consumer disconnected - ${this.client.clientId}`);
   }
 
-  // CHANGE: Register handler for specific topic
+  // Register handler for specific topic
   registerHandler(topic, handler) {
     if (typeof handler !== 'function') {
       throw new Error('Handler must be a function');
@@ -40,7 +40,7 @@ class KafkaConsumer {
     this.handlers.set(topic, handler);
   }
 
-  // CHANGE: Subscribe to topics with registered handlers
+  // Subscribe to topics with registered handlers
   async subscribe(topics, options = {}) {
     await this.connect();
 
@@ -54,7 +54,7 @@ class KafkaConsumer {
     console.log(`📥 Subscribed to topics: ${topicsArray.join(', ')}`);
   }
 
-  // CHANGE: Start consuming with error handling and DLQ
+  // Start consuming with error handling and DLQ
   async start(options = {}) {
     const { 
       enableDLQ = false,
@@ -67,7 +67,7 @@ class KafkaConsumer {
     }
 
     await this.consumer.run({
-      // CHANGE: Process messages in parallel (up to 5)
+      // Process messages in parallel (up to 5)
       partitionsConsumedConcurrently: 5,
       
       eachMessage: async ({ topic, partition, message }) => {
@@ -104,14 +104,14 @@ class KafkaConsumer {
             );
 
             if (attempt <= maxRetries) {
-              // CHANGE: Exponential backoff
+              // Exponential backoff
               const backoff = retryDelay * Math.pow(2, attempt - 1);
               await new Promise(resolve => setTimeout(resolve, backoff));
             }
           }
         }
 
-        // CHANGE: Send to DLQ after all retries exhausted
+        // Send to DLQ after all retries exhausted
         if (enableDLQ && this.dlqProducer) {
           await this._sendToDLQ(topic, message, lastError, correlationId);
         } else {

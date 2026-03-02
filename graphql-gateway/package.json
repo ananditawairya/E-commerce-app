@@ -18,10 +18,12 @@
     "node-fetch": "^2.6.9",
     "cors": "^2.8.5",
     "express-rate-limit": "^6.7.0",
+    "rate-limit-redis": "^4.2.2",
     "helmet": "^6.1.5",
     "jsonwebtoken": "^9.0.0",
     "opossum": "^6.3.0",
     "prom-client": "^15.1.0",
+    "redis": "^4.7.0",
     "uuid": "^9.0.0",
     "dotenv": "^16.0.3"
   },

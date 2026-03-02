@@ -1,5 +1,5 @@
 // backend/auth-service/src/resolvers/authResolvers.js
-// CHANGE: Modified to call REST API instead of direct database access
+// Modified to call REST API instead of direct database access
 
 const axios = require('axios');
 
@@ -9,7 +9,7 @@ const resolvers = {
   Query: {
     me: async (_, { token }, context) => {
       try {
-        // CHANGE: Call REST API instead of direct database query
+        // Call REST API instead of direct database query
         const response = await axios.get(`${API_BASE_URL}/me`, {
           params: { token },
           headers: {
@@ -24,7 +24,7 @@ const resolvers = {
 
     verifyToken: async (_, { token }, context) => {
       try {
-        // CHANGE: Call REST API instead of direct JWT verification
+        // Call REST API instead of direct JWT verification
         const response = await axios.post(
           `${API_BASE_URL}/verify-token`,
           { token },
@@ -48,7 +48,7 @@ const resolvers = {
   Mutation: {
     register: async (_, { email, password, name, role }, context) => {
       try {
-        // CHANGE: Call REST API instead of direct database operation
+        // Call REST API instead of direct database operation
         const response = await axios.post(
           `${API_BASE_URL}/register`,
           { email, password, name, role },
@@ -66,7 +66,7 @@ const resolvers = {
 
     login: async (_, { email, password }, context) => {
       try {
-        // CHANGE: Call REST API instead of direct database operation
+        // Call REST API instead of direct database operation
         const response = await axios.post(
           `${API_BASE_URL}/login`,
           { email, password },
@@ -84,7 +84,7 @@ const resolvers = {
 
     refreshToken: async (_, { refreshToken }, context) => {
       try {
-        // CHANGE: Call REST API instead of direct database operation
+        // Call REST API instead of direct database operation
         const response = await axios.post(
           `${API_BASE_URL}/refresh-token`,
           { refreshToken },
@@ -102,7 +102,7 @@ const resolvers = {
 
     logout: async (_, { refreshToken }, context) => {
       try {
-        // CHANGE: Call REST API instead of direct database operation
+        // Call REST API instead of direct database operation
         const response = await axios.post(
           `${API_BASE_URL}/logout`,
           { refreshToken },

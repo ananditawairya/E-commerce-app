@@ -1,5 +1,5 @@
 // backend/shared/kafka/KafkaProducer.js
-// CHANGE: Generic producer with circuit breaker and retry logic
+// Generic producer with circuit breaker and retry logic
 
 const KafkaClient = require('./KafkaClient');
 
@@ -9,7 +9,7 @@ class KafkaProducer {
     this.producer = this.client.createProducer();
     this.isConnected = false;
     
-    // CHANGE: Circuit breaker to prevent cascading failures
+    // Circuit breaker to prevent cascading failures
     this.circuitBreaker = {
       failures: 0,
       threshold: 5,
@@ -22,7 +22,7 @@ class KafkaProducer {
   async connect() {
     if (this.isConnected) return;
 
-    // CHANGE: Check circuit breaker state
+    // Check circuit breaker state
     if (this.circuitBreaker.state === 'OPEN') {
       if (Date.now() < this.circuitBreaker.nextAttempt) {
         throw new Error('Circuit breaker is OPEN - Kafka unavailable');
@@ -34,7 +34,7 @@ class KafkaProducer {
       await this.producer.connect();
       this.isConnected = true;
       
-      // CHANGE: Reset circuit breaker on successful connection
+      // Reset circuit breaker on successful connection
       this.circuitBreaker.failures = 0;
       this.circuitBreaker.state = 'CLOSED';
       
@@ -57,7 +57,7 @@ class KafkaProducer {
     }
   }
 
-  // CHANGE: Generic publish with configurable retry and criticality
+  // Generic publish with configurable retry and criticality
   async publish(topic, messages, options = {}) {
     const { 
       critical = false, 
@@ -91,7 +91,7 @@ class KafkaProducer {
         console.error(`❌ Publish attempt ${attempt + 1} failed:`, error.message);
 
         if (attempt < retries) {
-          // CHANGE: Exponential backoff with jitter
+          // Exponential backoff with jitter
           const backoff = Math.min(1000 * Math.pow(2, attempt), 10000);
           const jitter = Math.random() * 0.3 * backoff;
           await new Promise(resolve => setTimeout(resolve, backoff + jitter));
@@ -108,7 +108,7 @@ class KafkaProducer {
     return false;
   }
 
-  // CHANGE: Helper to build standardized event messages
+  // Helper to build standardized event messages
   buildMessage(key, event, correlationId) {
     return {
       key: String(key),

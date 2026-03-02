@@ -1,5 +1,5 @@
 // backend/shared/kafka/events/OrderEvents.js
-// CHANGE: Centralized order event schemas
+// Centralized order event schemas
 
 const TOPICS = {
   ORDER_CREATED: 'order.created',
@@ -36,7 +36,7 @@ const createOrderStatusUpdatedEvent = (orderId, status) => ({
   },
 });
 
-// CHANGE: Add order cancelled event
+// Add order cancelled event
 const createOrderCancelledEvent = (order) => ({
   eventType: 'OrderCancelled',
   payload: {

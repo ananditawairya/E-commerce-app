@@ -63,7 +63,7 @@ const orderSchema = new mongoose.Schema({
   timestamps: true,
 });
 
-// CHANGE: Configure toJSON to map _id to id for GraphQL compatibility
+// Configure toJSON to map _id to id for GraphQL compatibility
 orderSchema.set('toJSON', {
   virtuals: true,
   transform: (doc, ret) => {

@@ -7,7 +7,7 @@ const he = require('he');
  * @param {string} uri - URI to validate
  * @returns {boolean} - True if valid
  */
-// CHANGE: Add URI validation helper
+// Add URI validation helper
 const isValidUri = (uri) => {
   if (!uri || typeof uri !== 'string') return false;
   
@@ -73,7 +73,7 @@ const sanitizeProductInput = (input) => {
       }
       return image;
     })
-    // CHANGE: Filter out invalid URIs
+    // Filter out invalid URIs
     .filter(image => image && image.trim() !== '' && isValidUri(image));
   }
 
@@ -102,7 +102,7 @@ const sanitizeProductInput = (input) => {
           }
           return image;
         })
-        // CHANGE: Filter out invalid URIs
+        // Filter out invalid URIs
         .filter(image => image && image.trim() !== '' && isValidUri(image));
       }
 

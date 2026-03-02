@@ -1,8 +1,8 @@
 // backend/product-service/src/api/middleware/errorHandler.js
-// CHANGE: Centralized error handling for product service
+// Centralized error handling for product service
 
 const errorHandler = (err, req, res, next) => {
-  // CHANGE: Add null-safe check for req.log (GraphQL requests may not have logger attached)
+  // Add null-safe check for req.log (GraphQL requests may not have logger attached)
   if (req.log && typeof req.log.error === 'function') {
     req.log.error({
       error: err.message,
@@ -10,7 +10,7 @@ const errorHandler = (err, req, res, next) => {
       code: err.code,
     }, 'Request error');
   } else {
-    // CHANGE: Fallback to console.error if req.log is unavailable
+    // Fallback to console.error if req.log is unavailable
     console.error(JSON.stringify({
       level: 'error',
       correlationId: req.correlationId || 'unknown',
@@ -42,7 +42,7 @@ const errorHandler = (err, req, res, next) => {
     correlationId: req.correlationId || 'unknown',
   };
 
-  // CHANGE: Include additional error details for specific codes
+  // Include additional error details for specific codes
   if (err.code === 'INSUFFICIENT_STOCK') {
     response.available = err.available;
     response.requested = err.requested;

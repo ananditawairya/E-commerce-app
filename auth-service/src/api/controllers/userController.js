@@ -1,5 +1,5 @@
 // backend/auth-service/src/api/controllers/userController.js
-// CHANGE: REST API controller for user operations
+// REST API controller for user operations
 
 const userService = require('../../services/userService');
 
@@ -8,12 +8,12 @@ class UserController {
     try {
       const { email, password, name, role } = req.body;
 
-      // CHANGE: Centralized audit logging
+      // Centralized audit logging
       req.log.info({ email, role }, 'User registration attempt');
 
       const result = await userService.createUser({ email, password, name, role });
 
-      // CHANGE: Audit log successful registration
+      // Audit log successful registration
       req.log.info({ userId: result.user.id, email, role }, 'User registered successfully');
 
       res.status(201).json(result);
@@ -26,12 +26,12 @@ class UserController {
     try {
       const { email, password } = req.body;
 
-      // CHANGE: Centralized audit logging
+      // Centralized audit logging
       req.log.info({ email }, 'User login attempt');
 
       const result = await userService.authenticateUser({ email, password });
 
-      // CHANGE: Audit log successful login
+      // Audit log successful login
       req.log.info({ userId: result.user.id, email }, 'User logged in successfully');
 
       res.json(result);

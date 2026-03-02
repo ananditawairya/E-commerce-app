@@ -1,0 +1,45 @@
+const PRODUCT_SERVICE_URL = process.env.PRODUCT_SERVICE_URL || 'http://localhost:4002';
+const INTERNAL_JWT_SECRET = process.env.INTERNAL_JWT_SECRET || 'internal-secret';
+const PRODUCT_FETCH_TIMEOUT_MS = Number.parseInt(process.env.AI_PRODUCT_FETCH_TIMEOUT_MS || '6000', 10);
+
+const SEMANTIC_ENABLED = String(process.env.AI_SEMANTIC_ENABLED || 'false').toLowerCase() !== 'false';
+const EMBEDDING_MODEL = String(process.env.AI_EMBEDDING_MODEL || '').trim();
+const EMBEDDING_MODEL_FALLBACKS = (process.env.AI_EMBEDDING_MODEL_FALLBACKS || '')
+  .split(',')
+  .map((value) => String(value || '').trim().replace(/\s+/g, ' '))
+  .filter(Boolean);
+const EMBEDDING_MODEL_CANDIDATES = Array.from(new Set([EMBEDDING_MODEL, ...EMBEDDING_MODEL_FALLBACKS]));
+const EMBEDDING_API_VERSION = process.env.AI_EMBEDDING_API_VERSION || 'v1beta';
+
+const SEMANTIC_MAX_PRODUCTS = Number.parseInt(process.env.AI_SEMANTIC_MAX_PRODUCTS || '120', 10);
+const SEMANTIC_PAGE_SIZE = Math.min(50, Number.parseInt(process.env.AI_SEMANTIC_PAGE_SIZE || '50', 10));
+const SEMANTIC_MIN_SCORE = Number.parseFloat(process.env.AI_SEMANTIC_MIN_SCORE || '0.42');
+const SEMANTIC_SEARCH_TIMEOUT_MS = Number.parseInt(process.env.AI_SEMANTIC_SEARCH_TIMEOUT_MS || '1400', 10);
+const SEMANTIC_REINDEX_DELAY_MS = Number.parseInt(process.env.AI_SEMANTIC_REINDEX_DELAY_MS || '5000', 10);
+
+const SEMANTIC_INDEX_STALE_MS = Number.parseInt(process.env.AI_SEMANTIC_INDEX_STALE_MS || '600000', 10);
+const SEMANTIC_INDEX_CACHE_TTL_MS = Number.parseInt(process.env.AI_SEMANTIC_INDEX_CACHE_TTL_MS || '21600000', 10);
+const SEMANTIC_QUERY_EMBED_TTL_MS = Number.parseInt(process.env.AI_SEMANTIC_QUERY_EMBED_TTL_MS || '1800000', 10);
+const SEMANTIC_PRODUCT_EMBED_TTL_MS = Number.parseInt(process.env.AI_SEMANTIC_PRODUCT_EMBED_TTL_MS || '86400000', 10);
+
+const INDEX_CACHE_KEY = 'ai:semantic:index:v1';
+
+module.exports = {
+  EMBEDDING_API_VERSION,
+  EMBEDDING_MODEL,
+  EMBEDDING_MODEL_CANDIDATES,
+  INDEX_CACHE_KEY,
+  INTERNAL_JWT_SECRET,
+  PRODUCT_FETCH_TIMEOUT_MS,
+  PRODUCT_SERVICE_URL,
+  SEMANTIC_ENABLED,
+  SEMANTIC_INDEX_CACHE_TTL_MS,
+  SEMANTIC_INDEX_STALE_MS,
+  SEMANTIC_MAX_PRODUCTS,
+  SEMANTIC_MIN_SCORE,
+  SEMANTIC_PAGE_SIZE,
+  SEMANTIC_PRODUCT_EMBED_TTL_MS,
+  SEMANTIC_QUERY_EMBED_TTL_MS,
+  SEMANTIC_REINDEX_DELAY_MS,
+  SEMANTIC_SEARCH_TIMEOUT_MS,
+};

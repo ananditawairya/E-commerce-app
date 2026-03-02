@@ -1,5 +1,5 @@
 // backend/shared/kafka/events/UserEvents.js
-// CHANGE: Centralized user event schemas
+// Centralized user event schemas
 
 const TOPICS = {
   USER_REGISTERED: 'user.registered',

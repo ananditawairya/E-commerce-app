@@ -1,5 +1,5 @@
 // backend/product-service/src/kafka/kafkaConsumer.js
-// CHANGE: Use shared Kafka consumer with service-specific handlers
+// Use shared Kafka consumer with service-specific handlers
 
 const KafkaConsumer = require('../../../shared/kafka/KafkaConsumer');
 const { TOPICS } = require('../../../shared/kafka/events/OrderEvents');
@@ -12,22 +12,22 @@ class ProductServiceConsumer {
   }
 
   _registerHandlers() {
-    // CHANGE: Register handler for OrderCreated events
+    // Register handler for OrderCreated events
     this.consumer.registerHandler(TOPICS.ORDER_CREATED, async (event, context) => {
       await this._handleOrderCreated(event, context);
     });
 
-    // CHANGE: Register handler for OrderCancelled events to restore stock
+    // Register handler for OrderCancelled events to restore stock
     this.consumer.registerHandler(TOPICS.ORDER_CANCELLED, async (event, context) => {
       await this._handleOrderCancelled(event, context);
     });
   }
 
   async start() {
-    // CHANGE: Subscribe to both ORDER_CREATED and ORDER_CANCELLED topics
+    // Subscribe to both ORDER_CREATED and ORDER_CANCELLED topics
     await this.consumer.subscribe([TOPICS.ORDER_CREATED, TOPICS.ORDER_CANCELLED]);
     
-    // CHANGE: Enable DLQ for failed stock operations
+    // Enable DLQ for failed stock operations
     await this.consumer.start({
       enableDLQ: true,
       maxRetries: 3,
@@ -39,20 +39,20 @@ class ProductServiceConsumer {
     return this.consumer.disconnect();
   }
 
-  // CHANGE: Refactored to isolate errors per item (matching cancellation pattern)
+  // Refactored to isolate errors per item (matching cancellation pattern)
   async _handleOrderCreated(event, context) {
     const { orderId, items } = event.payload;
     const { correlationId } = context;
 
     console.log(`🛒 Processing OrderCreated: ${orderId} (${items.length} items)`);
 
-    // CHANGE: Track deduction results for each item
+    // Track deduction results for each item
     const deductionLog = [];
 
-    // CHANGE: Process items sequentially with error isolation
+    // Process items sequentially with error isolation
     for (const item of items) {
       try {
-        // CHANGE: Log the item being processed
+        // Log the item being processed
         console.log(`🔄 Deducting stock for item:`, {
           productId: item.productId,
           variantId: item.variantId,
@@ -93,12 +93,12 @@ class ProductServiceConsumer {
           error.message
         );
         
-        // CHANGE: Don't throw - continue processing other items
+        // Don't throw - continue processing other items
         // The DLQ mechanism will handle retry for failed items
       }
     }
 
-    // CHANGE: Log final deduction summary
+    // Log final deduction summary
     const successCount = deductionLog.filter(r => r.status === 'success').length;
     const failCount = deductionLog.filter(r => r.status === 'failed').length;
 
@@ -108,7 +108,7 @@ class ProductServiceConsumer {
       failed: failCount,
     });
 
-    // CHANGE: Throw error only if ALL items failed (for DLQ retry)
+    // Throw error only if ALL items failed (for DLQ retry)
     if (failCount > 0 && successCount === 0) {
       const failedItems = deductionLog.filter(r => r.status === 'failed');
       throw new Error(
@@ -117,7 +117,7 @@ class ProductServiceConsumer {
       );
     }
 
-    // CHANGE: Log warning if partial failure occurred
+    // Log warning if partial failure occurred
     if (failCount > 0) {
       console.error(`⚠️ Some items failed to deduct stock:`, 
         deductionLog.filter(r => r.status === 'failed')
@@ -125,20 +125,20 @@ class ProductServiceConsumer {
     }
   }
 
-  // CHANGE: Add detailed logging and validation for order cancellation
+  // Add detailed logging and validation for order cancellation
   async _handleOrderCancelled(event, context) {
     const { orderId, items } = event.payload;
     const { correlationId } = context;
 
     console.log(`❌ Processing OrderCancelled: ${orderId} (${items.length} items) - Restoring stock`);
 
-    // CHANGE: Track restoration for each item
+    // Track restoration for each item
     const restorationLog = [];
 
-    // CHANGE: Process items sequentially to restore stock with validation
+    // Process items sequentially to restore stock with validation
     for (const item of items) {
       try {
-        // CHANGE: Log the item being processed
+        // Log the item being processed
         console.log(`🔄 Restoring stock for item:`, {
           productId: item.productId,
           variantId: item.variantId,
@@ -179,11 +179,11 @@ class ProductServiceConsumer {
           error.message
         );
         
-        // CHANGE: Don't throw - continue restoring other items
+        // Don't throw - continue restoring other items
       }
     }
 
-    // CHANGE: Log final restoration summary
+    // Log final restoration summary
     const successCount = restorationLog.filter(r => r.status === 'success').length;
     const failCount = restorationLog.filter(r => r.status === 'failed').length;
 

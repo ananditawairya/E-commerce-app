@@ -1,5 +1,5 @@
 // backend/order-service/src/api/middleware/logger.js
-// CHANGE: Centralized logging middleware
+// Centralized logging middleware
 
 const { v4: uuidv4 } = require('uuid');
 

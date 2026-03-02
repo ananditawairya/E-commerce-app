@@ -1,206 +1,32 @@
-// ai-service/src/services/semanticSearchService.js
-// Semantic product retrieval with cached embeddings and fail-open behavior.
-
-const crypto = require('crypto');
-const axios = require('axios');
-const jwt = require('jsonwebtoken');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
-
 const cacheService = require('./cacheService');
-
-const PRODUCT_SERVICE_URL = process.env.PRODUCT_SERVICE_URL || 'http://localhost:4002';
-const INTERNAL_JWT_SECRET = process.env.INTERNAL_JWT_SECRET || 'internal-secret';
-const PRODUCT_FETCH_TIMEOUT_MS = Number.parseInt(process.env.AI_PRODUCT_FETCH_TIMEOUT_MS || '6000', 10);
-
-const SEMANTIC_ENABLED = String(process.env.AI_SEMANTIC_ENABLED || 'false').toLowerCase() !== 'false';
-const EMBEDDING_MODEL = String(process.env.AI_EMBEDDING_MODEL || '').trim();
-const EMBEDDING_MODEL_FALLBACKS = (process.env.AI_EMBEDDING_MODEL_FALLBACKS || '')
-    .split(',')
-    .map((value) => String(value || '').trim().replace(/\s+/g, ' '))
-    .filter(Boolean);
-const EMBEDDING_MODEL_CANDIDATES = Array.from(new Set([EMBEDDING_MODEL, ...EMBEDDING_MODEL_FALLBACKS]));
-const EMBEDDING_API_VERSION = process.env.AI_EMBEDDING_API_VERSION || 'v1beta';
-const SEMANTIC_MAX_PRODUCTS = Number.parseInt(process.env.AI_SEMANTIC_MAX_PRODUCTS || '120', 10);
-const SEMANTIC_PAGE_SIZE = Math.min(50, Number.parseInt(process.env.AI_SEMANTIC_PAGE_SIZE || '50', 10));
-const SEMANTIC_MIN_SCORE = Number.parseFloat(process.env.AI_SEMANTIC_MIN_SCORE || '0.42');
-const SEMANTIC_SEARCH_TIMEOUT_MS = Number.parseInt(process.env.AI_SEMANTIC_SEARCH_TIMEOUT_MS || '1400', 10);
-const SEMANTIC_REINDEX_DELAY_MS = Number.parseInt(process.env.AI_SEMANTIC_REINDEX_DELAY_MS || '5000', 10);
-
-const SEMANTIC_INDEX_STALE_MS = Number.parseInt(process.env.AI_SEMANTIC_INDEX_STALE_MS || '600000', 10);
-const SEMANTIC_INDEX_CACHE_TTL_MS = Number.parseInt(process.env.AI_SEMANTIC_INDEX_CACHE_TTL_MS || '21600000', 10);
-const SEMANTIC_QUERY_EMBED_TTL_MS = Number.parseInt(process.env.AI_SEMANTIC_QUERY_EMBED_TTL_MS || '1800000', 10);
-const SEMANTIC_PRODUCT_EMBED_TTL_MS = Number.parseInt(process.env.AI_SEMANTIC_PRODUCT_EMBED_TTL_MS || '86400000', 10);
-
-const INDEX_CACHE_KEY = 'ai:semantic:index:v1';
-
-const sanitizeText = (value) => {
-    if (typeof value !== 'string') {
-        return '';
-    }
-    return value.trim().replace(/\s+/g, ' ');
-};
-
-const buildInternalHeaders = () => ({
-    'Content-Type': 'application/json',
-    'x-internal-gateway-token': jwt.sign(
-        { service: 'ai-service' },
-        INTERNAL_JWT_SECRET,
-        { expiresIn: '2m' }
-    ),
-});
-
-const withTimeout = async (promise, timeoutMs, timeoutMessage) => {
-    let timer;
-
-    const timeoutPromise = new Promise((_, reject) => {
-        timer = setTimeout(() => {
-            reject(new Error(timeoutMessage));
-        }, timeoutMs);
-    });
-
-    try {
-        return await Promise.race([promise, timeoutPromise]);
-    } finally {
-        clearTimeout(timer);
-    }
-};
-
-const executeProductServiceQuery = async (query, variables = {}) => {
-    const response = await axios.post(
-        `${PRODUCT_SERVICE_URL}/graphql`,
-        { query, variables },
-        {
-            headers: buildInternalHeaders(),
-            timeout: PRODUCT_FETCH_TIMEOUT_MS,
-        }
-    );
-
-    if (response.data?.errors?.length) {
-        const firstError = response.data.errors[0];
-        throw new Error(firstError?.message || 'Product service GraphQL query failed');
-    }
-
-    return response.data?.data || {};
-};
-
-const normalizeVector = (values) => {
-    if (!Array.isArray(values) || values.length === 0) {
-        return null;
-    }
-
-    const cleaned = values.map((value) => (Number.isFinite(value) ? value : 0));
-    const magnitude = Math.sqrt(cleaned.reduce((sum, value) => sum + (value * value), 0));
-
-    if (!Number.isFinite(magnitude) || magnitude === 0) {
-        return null;
-    }
-
-    return cleaned.map((value) => value / magnitude);
-};
-
-const cosineSimilarityNormalized = (a, b) => {
-    if (!Array.isArray(a) || !Array.isArray(b) || a.length === 0 || a.length !== b.length) {
-        return 0;
-    }
-
-    let dot = 0;
-    for (let i = 0; i < a.length; i += 1) {
-        dot += a[i] * b[i];
-    }
-
-    return dot;
-};
-
-const getTotalStock = (product) => {
-    return (product.variants || []).reduce((sum, variant) => {
-        return sum + (typeof variant.stock === 'number' ? variant.stock : 0);
-    }, 0);
-};
-
-const buildProductDocumentText = (product) => {
-    const variantNames = (product.variants || [])
-        .slice(0, 5)
-        .map((variant) => sanitizeText(variant.name))
-        .filter(Boolean)
-        .join(', ');
-
-    return sanitizeText([
-        product.name,
-        product.category,
-        product.description,
-        variantNames ? `variants ${variantNames}` : '',
-        `price ${product.basePrice}`,
-    ].join('. ')).slice(0, 1200);
-};
-
-const createTextHash = (value) => {
-    return crypto
-        .createHash('sha256')
-        .update(String(value || ''))
-        .digest('hex')
-        .slice(0, 24);
-};
-
-const buildModelScopedCacheKey = (baseKey, modelName) => {
-    if (!baseKey) {
-        return null;
-    }
-    return `${baseKey}:m:${createTextHash(modelName || 'unknown')}`;
-};
-
-const isEmbeddingModelUnavailableError = (error) => {
-    const statusCode = Number.parseInt(error?.status, 10);
-    if (statusCode === 404) {
-        return true;
-    }
-
-    const message = sanitizeText(error?.message || '').toLowerCase();
-    return message.includes('not found')
-        || message.includes('not supported for embedcontent');
-};
-
-const extractErrorMessage = (error) => {
-    const directMessage = sanitizeText(error?.message || '');
-    if (directMessage) {
-        return directMessage;
-    }
-
-    const causeMessage = sanitizeText(error?.cause?.message || '');
-    if (causeMessage) {
-        return causeMessage;
-    }
-
-    const errorCode = sanitizeText(error?.code || error?.cause?.code || '');
-    if (errorCode) {
-        return errorCode;
-    }
-
-    return 'unknown error';
-};
-
-const extractTokens = (value) => {
-    return sanitizeText(value)
-        .toLowerCase()
-        .replace(/[^a-z0-9\s]/g, ' ')
-        .split(/\s+/)
-        .filter((token) => token.length >= 3)
-        .slice(0, 12);
-};
-
-const lexicalOverlapBoost = (queryText, product) => {
-    const queryTokens = extractTokens(queryText);
-    if (queryTokens.length === 0) {
-        return 0;
-    }
-
-    const haystack = `${product.name || ''} ${product.description || ''} ${product.category || ''}`.toLowerCase();
-    const hits = queryTokens.reduce((count, token) => count + (haystack.includes(token) ? 1 : 0), 0);
-    return hits / queryTokens.length;
-};
-
-const clamp = (value, min, max) => {
-    return Math.max(min, Math.min(max, value));
-};
+const {
+    EMBEDDING_API_VERSION,
+    EMBEDDING_MODEL,
+    EMBEDDING_MODEL_CANDIDATES,
+    INDEX_CACHE_KEY,
+    SEMANTIC_ENABLED,
+    SEMANTIC_INDEX_CACHE_TTL_MS,
+    SEMANTIC_INDEX_STALE_MS,
+    SEMANTIC_MAX_PRODUCTS,
+    SEMANTIC_PAGE_SIZE,
+    SEMANTIC_PRODUCT_EMBED_TTL_MS,
+    SEMANTIC_REINDEX_DELAY_MS,
+    SEMANTIC_SEARCH_TIMEOUT_MS,
+} = require('./semanticSearch/config');
+const {
+    buildModelScopedCacheKey,
+    buildProductDocumentText,
+    createTextHash,
+    executeProductServiceQuery,
+    extractErrorMessage,
+    getTotalStock,
+    isEmbeddingModelUnavailableError,
+    normalizeVector,
+    sanitizeText,
+    withTimeout,
+} = require('./semanticSearch/helpers');
+const searchOperations = require('./semanticSearch/searchOperations');
 
 class SemanticSearchService {
     constructor() {
@@ -665,171 +491,15 @@ class SemanticSearchService {
     }
 
     applyFilters(product, filters) {
-        if (!product) {
-            return false;
-        }
-
-        const {
-            category,
-            minPrice,
-            maxPrice,
-            inStockOnly,
-        } = filters;
-
-        if (category && sanitizeText(product.category).toLowerCase() !== sanitizeText(category).toLowerCase()) {
-            return false;
-        }
-
-        if (Number.isFinite(minPrice) && Number.isFinite(product.basePrice) && product.basePrice < minPrice) {
-            return false;
-        }
-
-        if (Number.isFinite(maxPrice) && Number.isFinite(product.basePrice) && product.basePrice > maxPrice) {
-            return false;
-        }
-
-        if (inStockOnly && (!Number.isFinite(product.totalStock) || product.totalStock <= 0)) {
-            return false;
-        }
-
-        return true;
+        return searchOperations.applyFilters(product, filters);
     }
 
     async search(query, options = {}) {
-        const cleanQuery = sanitizeText(query);
-        const limit = Number.parseInt(options.limit || '12', 10);
-
-        if (!this.isEnabled() || !cleanQuery) {
-            return {
-                products: [],
-                semanticUsed: false,
-                cacheHit: false,
-                reason: 'disabled_or_empty',
-            };
-        }
-
-        try {
-            const indexState = await this.ensureIndex({
-                force: false,
-                waitForBuild: false,
-                reason: 'search',
-            });
-
-            if (!indexState.ready || this.index.products.length === 0) {
-                return {
-                    products: [],
-                    semanticUsed: false,
-                    cacheHit: false,
-                    reason: 'index_warming',
-                };
-            }
-
-            const queryEmbedKey = `ai:semantic:q:${createTextHash(cleanQuery.toLowerCase())}`;
-            const queryEmbedding = await withTimeout(
-                this.embedText(cleanQuery, queryEmbedKey, SEMANTIC_QUERY_EMBED_TTL_MS),
-                SEMANTIC_SEARCH_TIMEOUT_MS,
-                'Semantic query embedding timeout'
-            );
-
-            if (!queryEmbedding.vector) {
-                return {
-                    products: [],
-                    semanticUsed: false,
-                    cacheHit: queryEmbedding.cacheHit,
-                    reason: 'query_embedding_failed',
-                };
-            }
-
-            const minScore = Number.isFinite(options.minScore) ? options.minScore : SEMANTIC_MIN_SCORE;
-            const candidates = [];
-
-            this.index.products.forEach((product) => {
-                if (!this.applyFilters(product, options)) {
-                    return;
-                }
-
-                const semanticScore = cosineSimilarityNormalized(queryEmbedding.vector, product.vector);
-                const lexicalBoost = lexicalOverlapBoost(cleanQuery, product);
-                const stockBoost = clamp((product.totalStock || 0) / 80, 0, 0.15);
-
-                const hybridScore = (semanticScore * 0.82) + (lexicalBoost * 0.14) + stockBoost;
-                if (hybridScore < minScore) {
-                    return;
-                }
-
-                candidates.push({
-                    product,
-                    score: hybridScore,
-                });
-            });
-
-            const normalizedLimit = Number.isFinite(limit) ? clamp(limit, 1, 30) : 12;
-            const top = candidates
-                .sort((a, b) => b.score - a.score)
-                .slice(0, normalizedLimit)
-                .map((entry) => {
-                    const base = {
-                        id: entry.product.id,
-                        name: entry.product.name,
-                        description: entry.product.description,
-                        category: entry.product.category,
-                        basePrice: entry.product.basePrice,
-                        images: entry.product.images,
-                        variants: entry.product.variants,
-                        createdAt: entry.product.createdAt,
-                    };
-
-                    if (options.includeScores) {
-                        base.semanticScore = Number(entry.score.toFixed(4));
-                    }
-
-                    return base;
-                });
-
-            return {
-                products: top,
-                semanticUsed: true,
-                cacheHit: Boolean(indexState.cacheHit && queryEmbedding.cacheHit),
-                reason: 'ok',
-            };
-        } catch (error) {
-            const errorMessage = error?.message || 'unknown error';
-            this.lastError = {
-                message: errorMessage,
-                at: new Date().toISOString(),
-                reason: 'search',
-            };
-
-            console.warn('Semantic search failed:', errorMessage);
-
-            return {
-                products: [],
-                semanticUsed: false,
-                cacheHit: false,
-                reason: 'error',
-                error: errorMessage,
-            };
-        }
+        return searchOperations.search(this, query, options);
     }
 
     async searchProducts(query, options = {}) {
-        const semantic = await this.search(query, {
-            ...options,
-            includeScores: true,
-        });
-
-        const results = (semantic.products || []).map((product) => ({
-            productId: product.id,
-            score: Number.isFinite(product.semanticScore) ? product.semanticScore : 0,
-        }));
-
-        return {
-            results,
-            cacheHit: semantic.cacheHit,
-            semanticUsed: semantic.semanticUsed,
-            reason: semantic.reason,
-            error: semantic.error,
-        };
+        return searchOperations.searchProducts(this, query, options);
     }
 
     /**
@@ -858,114 +528,7 @@ class SemanticSearchService {
      * }>} Similarity result payload.
      */
     async getSimilarProductsByProductId(productId, options = {}) {
-        const cleanProductId = sanitizeText(productId);
-        const limit = Number.parseInt(options.limit || '30', 10);
-
-        if (!cleanProductId) {
-            return {
-                results: [],
-                sourceCategory: null,
-                cacheHit: false,
-                semanticUsed: false,
-                reason: 'empty_product_id',
-            };
-        }
-
-        if (!this.isEnabled()) {
-            return {
-                results: [],
-                sourceCategory: null,
-                cacheHit: false,
-                semanticUsed: false,
-                reason: 'disabled',
-            };
-        }
-
-        try {
-            const indexState = await this.ensureIndex({
-                force: false,
-                waitForBuild: false,
-                reason: 'similar_products',
-            });
-
-            if (!indexState.ready || this.index.products.length === 0) {
-                return {
-                    results: [],
-                    sourceCategory: null,
-                    cacheHit: false,
-                    semanticUsed: false,
-                    reason: 'index_warming',
-                };
-            }
-
-            const sourceProduct = this.index.products.find(
-                (product) => String(product.id) === cleanProductId
-            );
-
-            if (!sourceProduct || !Array.isArray(sourceProduct.vector) || sourceProduct.vector.length === 0) {
-                return {
-                    results: [],
-                    sourceCategory: sourceProduct?.category || null,
-                    cacheHit: false,
-                    semanticUsed: false,
-                    reason: 'source_not_indexed',
-                };
-            }
-
-            const minScore = Number.isFinite(options.minScore) ? options.minScore : 0;
-            const normalizedLimit = Number.isFinite(limit) ? clamp(limit, 1, 200) : 30;
-            const candidates = [];
-
-            this.index.products.forEach((product) => {
-                if (String(product.id) === cleanProductId) {
-                    return;
-                }
-
-                if (!this.applyFilters(product, options)) {
-                    return;
-                }
-
-                const rawCosine = cosineSimilarityNormalized(sourceProduct.vector, product.vector);
-                const normalizedCosine = clamp((rawCosine + 1) / 2, 0, 1);
-
-                if (normalizedCosine < minScore) {
-                    return;
-                }
-
-                candidates.push({
-                    productId: product.id,
-                    score: Number(normalizedCosine.toFixed(6)),
-                    category: product.category || null,
-                    basePrice: Number.isFinite(product.basePrice) ? product.basePrice : 0,
-                });
-            });
-
-            return {
-                results: candidates
-                    .sort((a, b) => b.score - a.score)
-                    .slice(0, normalizedLimit),
-                sourceCategory: sourceProduct.category || null,
-                cacheHit: Boolean(indexState.cacheHit),
-                semanticUsed: true,
-                reason: 'ok',
-            };
-        } catch (error) {
-            const errorMessage = extractErrorMessage(error);
-            this.lastError = {
-                message: errorMessage,
-                at: new Date().toISOString(),
-                reason: 'similar_products',
-            };
-
-            return {
-                results: [],
-                sourceCategory: null,
-                cacheHit: false,
-                semanticUsed: false,
-                reason: 'error',
-                error: errorMessage,
-            };
-        }
+        return searchOperations.getSimilarProductsByProductId(this, productId, options);
     }
 }
 

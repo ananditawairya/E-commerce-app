@@ -1,24 +1,24 @@
 // backend/order-service/src/services/orderService.js
-// CHANGE: Pass mongoose instance to saga coordinator
+// Pass mongoose instance to saga coordinator
 
 const Cart = require('../models/Cart');
 const Order = require('../models/Order');
 const kafkaProducer = require('../kafka/kafkaProducer');
 const mongoose = require('mongoose');
-// CHANGE: Import Saga coordinator
+// Import Saga coordinator
 const SagaCoordinator = require('../../../shared/saga/SagaCoordinator');
 const orderCreationSaga = require('../saga/orderCreationSaga');
 
-// CHANGE: Initialize saga coordinator with mongoose instance
+// Initialize saga coordinator with mongoose instance
 let sagaCoordinator;
 
-// CHANGE: Connect saga coordinator on service startup
+// Connect saga coordinator on service startup
 const initializeSagaCoordinator = async () => {
   try {
-    // CHANGE: Pass mongoose instance to coordinator
+    // Pass mongoose instance to coordinator
     sagaCoordinator = new SagaCoordinator('order-service', mongoose);
     
-    // CHANGE: Register order creation saga
+    // Register order creation saga
     sagaCoordinator.registerSaga('ORDER_CREATION', orderCreationSaga);
     
     await sagaCoordinator.connect();
@@ -131,12 +131,12 @@ class OrderService {
   }
 
 async createOrder(userId, { items, totalAmount, shippingAddress }, correlationId) {
-  // CHANGE: Ensure saga coordinator is initialized
+  // Ensure saga coordinator is initialized
   if (!sagaCoordinator) {
     throw new Error('Saga coordinator not initialized');
   }
 
-  // CHANGE: Group items by seller to create separate orders
+  // Group items by seller to create separate orders
   const itemsBySeller = items.reduce((acc, item) => {
     if (!acc[item.sellerId]) {
       acc[item.sellerId] = [];
@@ -147,7 +147,7 @@ async createOrder(userId, { items, totalAmount, shippingAddress }, correlationId
 
   const sellerIds = Object.keys(itemsBySeller);
   
-  // CHANGE: Create separate order for each seller
+  // Create separate order for each seller
   const createdOrders = [];
   
   for (const sellerId of sellerIds) {
@@ -157,7 +157,7 @@ async createOrder(userId, { items, totalAmount, shippingAddress }, correlationId
       0
     );
 
-    // CHANGE: Create individual order per seller
+    // Create individual order per seller
     const order = new Order({
       orderId: `ORD-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
       buyerId: userId,
@@ -170,7 +170,7 @@ async createOrder(userId, { items, totalAmount, shippingAddress }, correlationId
 
     await order.save();
 
-    // CHANGE: Start saga for each seller's order
+    // Start saga for each seller's order
     try {
       const saga = await sagaCoordinator.startSaga(
         'ORDER_CREATION',
@@ -184,7 +184,7 @@ async createOrder(userId, { items, totalAmount, shippingAddress }, correlationId
         `${correlationId}-${sellerId}`
       );
 
-      // CHANGE: Execute saga steps
+      // Execute saga steps
       await this.executeSagaSteps(saga, `${correlationId}-${sellerId}`);
 
       // Keep new orders pending so sellers can explicitly confirm from dashboard.
@@ -204,22 +204,22 @@ async createOrder(userId, { items, totalAmount, shippingAddress }, correlationId
 
       console.log(`✅ Order created successfully via saga: ${order.orderId} for seller: ${sellerId}`);
     } catch (error) {
-      // CHANGE: If saga fails, update order status to cancelled
+      // If saga fails, update order status to cancelled
       order.status = 'cancelled';
       await order.save();
 
       console.error(`❌ Order creation saga failed: ${order.orderId}`, error.message);
       
-      // CHANGE: Continue creating orders for other sellers even if one fails
+      // Continue creating orders for other sellers even if one fails
       createdOrders.push(order);
     }
   }
 
-  // CHANGE: Return array of orders instead of single order
+  // Return array of orders instead of single order
   return createdOrders;
 }
 
-  // CHANGE: Execute saga steps sequentially
+  // Execute saga steps sequentially
   async executeSagaSteps(saga, correlationId) {
     const definition = orderCreationSaga;
 
@@ -258,21 +258,56 @@ async createOrder(userId, { items, totalAmount, shippingAddress }, correlationId
 
   async getSellerAnalytics(sellerId, days = 30) {
     const safeDays = Math.max(1, Math.min(Number(days) || 30, 365));
-    const start = new Date();
-    start.setHours(0, 0, 0, 0);
-    start.setDate(start.getDate() - (safeDays - 1));
+    const now = new Date();
+    const startUtc = new Date(Date.UTC(
+      now.getUTCFullYear(),
+      now.getUTCMonth(),
+      now.getUTCDate() - (safeDays - 1),
+      0,
+      0,
+      0,
+      0
+    ));
 
     const match = {
       'items.sellerId': sellerId,
-      createdAt: { $gte: start },
+      createdAt: { $gte: startUtc, $lte: now },
     };
 
-    const totalsAgg = await Order.aggregate([
+    const sellerRevenueProjection = [
       { $match: match },
+      {
+        $addFields: {
+          sellerRevenue: {
+            $sum: {
+              $map: {
+                input: {
+                  $filter: {
+                    input: '$items',
+                    as: 'item',
+                    cond: { $eq: ['$$item.sellerId', sellerId] },
+                  },
+                },
+                as: 'item',
+                in: {
+                  $multiply: [
+                    { $ifNull: ['$$item.price', 0] },
+                    { $ifNull: ['$$item.quantity', 0] },
+                  ],
+                },
+              },
+            },
+          },
+        },
+      },
+    ];
+
+    const totalsAgg = await Order.aggregate([
+      ...sellerRevenueProjection,
       {
         $group: {
           _id: null,
-          totalRevenue: { $sum: '$totalAmount' },
+          totalRevenue: { $sum: '$sellerRevenue' },
           totalOrders: { $sum: 1 },
         },
       },
@@ -284,11 +319,17 @@ async createOrder(userId, { items, totalAmount, shippingAddress }, correlationId
     ]);
 
     const trendAgg = await Order.aggregate([
-      { $match: match },
+      ...sellerRevenueProjection,
       {
         $group: {
-          _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
-          revenue: { $sum: '$totalAmount' },
+          _id: {
+            $dateToString: {
+              format: '%Y-%m-%d',
+              date: '$createdAt',
+              timezone: 'UTC',
+            },
+          },
+          revenue: { $sum: '$sellerRevenue' },
           orders: { $sum: 1 },
         },
       },
@@ -305,14 +346,30 @@ async createOrder(userId, { items, totalAmount, shippingAddress }, correlationId
     const trendMap = new Map(trendAgg.map(t => [t._id, t]));
     const trend = [];
     for (let i = 0; i < safeDays; i++) {
-      const d = new Date(start);
-      d.setDate(start.getDate() + i);
-      const key = d.toISOString().slice(0, 10);
+      const d = new Date(startUtc);
+      d.setUTCDate(startUtc.getUTCDate() + i);
+      const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
       const point = trendMap.get(key);
       trend.push({
         date: key,
         revenue: point ? point.revenue : 0,
         orders: point ? point.orders : 0,
+      });
+    }
+
+    if (process.env.NODE_ENV !== 'production') {
+      const nonZeroTrendPoints = trend.filter(
+        (point) => Number(point.orders) > 0 || Number(point.revenue) > 0
+      ).length;
+      console.log('ANALYTICS_V2', {
+        sellerId,
+        days: safeDays,
+        rangeStartUtc: startUtc.toISOString(),
+        rangeEndUtc: now.toISOString(),
+        totalOrders: totals.totalOrders,
+        totalRevenue: totals.totalRevenue,
+        nonZeroTrendPoints,
+        lastTrendDate: trend[trend.length - 1]?.date || null,
       });
     }
 

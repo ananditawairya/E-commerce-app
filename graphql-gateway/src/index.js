@@ -1,5 +1,5 @@
 // backend/graphql-gateway/src/index.js
-// CHANGE: Enhanced gateway with rate limiting, circuit breakers, and security
+// Enhanced gateway with rate limiting, circuit breakers, and security
 
 require('dotenv').config();
 const express = require('express');
@@ -17,8 +17,11 @@ const CircuitBreaker = require('opossum');
 const { v4: uuidv4 } = require('uuid');
 const { createMetrics } = require('../../shared/metrics/metricsMiddleware');
 const promClient = require('prom-client');
+const runtimeStore = require('./services/runtimeStore');
+const { createIdempotencyMiddleware } = require('./middleware/idempotency');
 
 const app = express();
+let httpServer = null;
 
 // Prometheus metrics
 const { middleware: metricsMiddleware, endpoint: metricsEndpoint } = createMetrics(promClient, 'graphql-gateway');
@@ -31,7 +34,7 @@ const PRODUCT_SERVICE_URL = process.env.PRODUCT_SERVICE_URL || 'http://localhost
 const ORDER_SERVICE_URL = process.env.ORDER_SERVICE_URL || 'http://localhost:4003';
 const AI_SERVICE_URL = process.env.AI_SERVICE_URL || 'http://localhost:4004';
 
-// CHANGE: Security middleware
+// Security middleware
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
@@ -47,7 +50,12 @@ app.use(cors({
   origin: process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:3000'],
   credentials: true,
   methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Correlation-ID'],
+  allowedHeaders: [
+    'Content-Type',
+    'Authorization',
+    'X-Correlation-ID',
+    'Idempotency-Key',
+  ],
 }));
 
 app.use(express.json({
@@ -60,12 +68,21 @@ app.use(express.urlencoded({
   extended: true
 }));
 
-// CHANGE: Rate limiting with different tiers
-const createRateLimiter = (windowMs, max, message) => {
-  return rateLimit({
-    windowMs,
-    max,
-    message: { error: message },
+/**
+ * Creates one Express rate limiter middleware.
+ * @param {{
+ *   windowMs: number,
+ *   max: number,
+ *   message: string,
+ *   prefix: string,
+ * }} options Limiter options.
+ * @return {Function} Express middleware.
+ */
+const createRateLimiter = (options) => {
+  const limiterConfig = {
+    windowMs: options.windowMs,
+    max: options.max,
+    message: { error: options.message },
     standardHeaders: true,
     legacyHeaders: false,
     keyGenerator: (req) => {
@@ -76,27 +93,28 @@ const createRateLimiter = (windowMs, max, message) => {
       // Skip rate limiting for health checks
       return req.path === '/health';
     }
-  });
+  };
+
+  const redisStore = runtimeStore.createRateLimitStore(options.prefix);
+  if (redisStore) {
+    limiterConfig.store = redisStore;
+  }
+
+  return rateLimit(limiterConfig);
 };
 
-// CHANGE: Different rate limits for different endpoints
-const authLimiter = createRateLimiter(
-  15 * 60 * 1000, // 15 minutes
-  1000, // CHANGE: Increased to 1000 attempts for development/testing
-  'Too many authentication attempts, please try again later.'
-);
-
-const graphqlLimiter = createRateLimiter(
-  15 * 60 * 1000, // 15 minutes
-  10000, // CHANGE: Increased to 10,000 requests for development/testing
-  'Too many GraphQL requests, please try again later.'
-);
+let authLimiter = (req, res, next) => next();
+let graphqlLimiter = (req, res, next) => next();
+let generalLimiter = (req, res, next) => next();
+const idempotencyMiddleware = createIdempotencyMiddleware({
+  runtimeStore,
+});
 
 const conditionalRateLimiter = (req, res, next) => {
   const operationName = req.body?.operationName;
   const query = req.body?.query || '';
 
-  // CHANGE: Use higher limit for auth operations
+  // Use higher limit for auth operations
   const isAuthOperation =
     operationName === 'Login' ||
     operationName === 'Register' ||
@@ -110,17 +128,10 @@ const conditionalRateLimiter = (req, res, next) => {
   return graphqlLimiter(req, res, next);
 };
 
+// Apply general rate limiting
+app.use((req, res, next) => generalLimiter(req, res, next));
 
-const generalLimiter = createRateLimiter(
-  15 * 60 * 1000, // 15 minutes
-  200, // 200 requests
-  'Too many requests, please try again later.'
-);
-
-// CHANGE: Apply general rate limiting
-app.use(generalLimiter);
-
-// CHANGE: Correlation ID middleware
+// Correlation ID middleware
 app.use((req, res, next) => {
   const correlationId = req.headers['x-correlation-id'] || uuidv4();
   req.correlationId = correlationId;
@@ -128,17 +139,17 @@ app.use((req, res, next) => {
   next();
 });
 
-// CHANGE: Authentication middleware with exemptions for login/register
+// Authentication middleware with exemptions for login/register
 const authenticateToken = async (req, res, next) => {
-  // CHANGE: Extract operation name from GraphQL request
+  // Extract operation name from GraphQL request
   const operationName = req.body?.operationName;
   const query = req.body?.query || '';
 
-  // CHANGE: List of operations that don't require authentication
+  // List of operations that don't require authentication
   const publicOperations = ['Login', 'Register', 'IntrospectionQuery', 'SendChatMessage', 'sendChatMessage', 'GetProducts', 'products'];
 
 
-  // CHANGE: Check if this is a public operation by name or query content
+  // Check if this is a public operation by name or query content
   const isPublicOperation =
     publicOperations.includes(operationName) ||
     query.includes('mutation Login') ||
@@ -151,7 +162,7 @@ const authenticateToken = async (req, res, next) => {
     query.includes('products(') ||
     query.includes('__schema'); // Allow introspection queries
 
-  // CHANGE: Skip authentication for public operations
+  // Skip authentication for public operations
   if (isPublicOperation) {
     console.log(`⚠️  Skipping auth for public operation: ${operationName || 'unnamed'}`);
     return next();
@@ -166,7 +177,7 @@ const authenticateToken = async (req, res, next) => {
   }
 
   try {
-    // CHANGE: Verify token with auth service
+    // Verify token with auth service
     const response = await fetch(`${AUTH_SERVICE_URL}/api/users/verify-token`, {
       method: 'POST',
       headers: {
@@ -215,7 +226,7 @@ const authenticateToken = async (req, res, next) => {
   }
 };
 
-// CHANGE: Request validation middleware - allow introspection in development
+// Request validation middleware - allow introspection in development
 const validateGraphQLRequest = (req, res, next) => {
   const { query, variables } = req.body;
 
@@ -227,7 +238,7 @@ const validateGraphQLRequest = (req, res, next) => {
     return res.status(400).json({ error: 'Query must be a string' });
   }
 
-  // CHANGE: Only block introspection in production environment
+  // Only block introspection in production environment
   const isDevelopment = process.env.NODE_ENV !== 'production';
 
   if (!isDevelopment) {
@@ -245,7 +256,7 @@ const validateGraphQLRequest = (req, res, next) => {
   next();
 };
 
-// CHANGE: Circuit breaker configuration
+// Circuit breaker configuration
 const circuitBreakerOptions = {
   timeout: 10000, // 10 seconds
   errorThresholdPercentage: 50,
@@ -254,17 +265,17 @@ const circuitBreakerOptions = {
   rollingCountBuckets: 10
 };
 
-// CHANGE: Service circuit breakers
+// Service circuit breakers
 const authServiceBreaker = new CircuitBreaker(callAuthService, circuitBreakerOptions);
 const productServiceBreaker = new CircuitBreaker(callProductService, circuitBreakerOptions);
 const orderServiceBreaker = new CircuitBreaker(callOrderService, circuitBreakerOptions);
 
-// CHANGE: Circuit breaker fallbacks
+// Circuit breaker fallbacks
 authServiceBreaker.fallback(() => ({ error: 'Auth service temporarily unavailable' }));
 productServiceBreaker.fallback(() => ({ error: 'Product service temporarily unavailable' }));
 orderServiceBreaker.fallback(() => ({ error: 'Order service temporarily unavailable' }));
 
-// CHANGE: Service call functions for circuit breakers
+// Service call functions for circuit breakers
 async function callAuthService(path, options = {}) {
   const response = await fetch(`${AUTH_SERVICE_URL}${path}`, {
     timeout: 10000,
@@ -289,8 +300,8 @@ async function callOrderService(path, options = {}) {
   return response;
 }
 
-// CHANGE: REST API proxy routes with circuit breakers
-app.use('/api/auth', authLimiter, async (req, res) => {
+// REST API proxy routes with circuit breakers
+app.use('/api/auth', (req, res, next) => authLimiter(req, res, next), async (req, res) => {
   try {
     const response = await authServiceBreaker.fire('/api/users' + req.path, {
       method: req.method,
@@ -348,12 +359,15 @@ app.use('/api/orders', authenticateToken, async (req, res) => {
   }
 });
 
-// CHANGE: Health check endpoint with circuit breaker status
+// Health check endpoint with circuit breaker status
 app.get('/health', (req, res) => {
   const healthStatus = {
     status: 'healthy',
     timestamp: new Date().toISOString(),
     services: {
+      runtimeStore: {
+        mode: runtimeStore.getMode(),
+      },
       auth: {
         status: authServiceBreaker.opened ? 'circuit_open' : 'healthy',
         stats: authServiceBreaker.stats
@@ -371,26 +385,26 @@ app.get('/health', (req, res) => {
   res.json(healthStatus);
 });
 
-// CHANGE: Create executor with internal authentication
+// Create executor with internal authentication
 const createExecutor = (url, serviceName) => {
   return async ({ document, variables, context }) => {
     const query = print(document);
 
-    // CHANGE: Generate internal gateway token
+    // Generate internal gateway token
     const internalToken = jwt.sign(
       { service: 'gateway', timestamp: Date.now() },
       process.env.INTERNAL_JWT_SECRET || 'internal-secret',
       { expiresIn: '1h' }
     );
 
-    // CHANGE: Use separate headers for service auth and user auth
+    // Use separate headers for service auth and user auth
     const headers = {
       'Content-Type': 'application/json',
       'X-Correlation-ID': context?.correlationId || '',
       'x-internal-gateway-token': internalToken, // ✅ Service-to-service auth
     };
 
-    // CHANGE: Forward original user authorization if present
+    // Forward original user authorization if present
     if (context?.authHeader) {
       headers['Authorization'] = context.authHeader; // ✅ User auth
     }
@@ -407,6 +421,26 @@ const createExecutor = (url, serviceName) => {
 
 const startServer = async () => {
   console.log('🚀 Starting Enhanced GraphQL Gateway...\n');
+  await runtimeStore.connect();
+
+  authLimiter = createRateLimiter({
+    windowMs: 15 * 60 * 1000,
+    max: 1000,
+    message: 'Too many authentication attempts, please try again later.',
+    prefix: 'auth',
+  });
+  graphqlLimiter = createRateLimiter({
+    windowMs: 15 * 60 * 1000,
+    max: 10000,
+    message: 'Too many GraphQL requests, please try again later.',
+    prefix: 'graphql',
+  });
+  generalLimiter = createRateLimiter({
+    windowMs: 15 * 60 * 1000,
+    max: 200,
+    message: 'Too many requests, please try again later.',
+    prefix: 'general',
+  });
 
   const authExecutor = createExecutor(`${AUTH_SERVICE_URL}/graphql`, 'auth');
   const productExecutor = createExecutor(`${PRODUCT_SERVICE_URL}/graphql`, 'product');
@@ -447,7 +481,7 @@ const startServer = async () => {
       ],
     });
 
-    // CHANGE: Enable introspection and playground in development environment
+    // Enable introspection and playground in development environment
     const isDevelopment = process.env.NODE_ENV !== 'production';
 
     // Create Apollo Server
@@ -458,8 +492,8 @@ const startServer = async () => {
         correlationId: req.correlationId,
         user: req.user,
       }),
-      introspection: isDevelopment, // CHANGE: Enable introspection in development
-      playground: isDevelopment,   // CHANGE: Enable playground in development
+      introspection: isDevelopment, // Enable introspection in development
+      playground: isDevelopment,   // Enable playground in development
       plugins: [
         {
           requestDidStart() {
@@ -478,19 +512,25 @@ const startServer = async () => {
 
     await server.start();
 
-    // CHANGE: Apply middleware before GraphQL endpoint
-    app.use('/graphql', conditionalRateLimiter, authenticateToken, validateGraphQLRequest);
+    // Apply middleware before GraphQL endpoint
+    app.use(
+      '/graphql',
+      conditionalRateLimiter,
+      authenticateToken,
+      validateGraphQLRequest,
+      idempotencyMiddleware
+    );
     server.applyMiddleware({ app, path: '/graphql' });
 
     const PORT = process.env.PORT || 4000;
-    app.listen(PORT, () => {
+    httpServer = app.listen(PORT, () => {
       console.log(`\n✅ Enhanced GraphQL Gateway is running!`);
       console.log(`📍 URL: http://localhost:${PORT}/graphql`);
       console.log(`🔒 Security Features Enabled:`);
-      console.log(`   - Rate Limiting: 100 GraphQL requests/15min`);
+      console.log(`   - Rate Limiting: 10,000 GraphQL requests/15min`);
       console.log(`   - Circuit Breakers: 50% error threshold`);
       console.log(`   - Authentication: Required for all GraphQL requests`);
-      // CHANGE: Update security message based on environment
+      // Update security message based on environment
       if (isDevelopment) {
         console.log(`   - Introspection: Enabled (development mode)`);
         console.log(`   - Playground: Enabled (development mode)`);
@@ -518,5 +558,22 @@ const startServer = async () => {
     process.exit(1);
   }
 };
+
+const gracefulShutdown = async (signal) => {
+  console.log(`\n${signal} received, shutting down GraphQL Gateway...`);
+  try {
+    if (httpServer) {
+      await new Promise((resolve) => httpServer.close(resolve));
+    }
+    await runtimeStore.disconnect();
+    process.exit(0);
+  } catch (error) {
+    console.error('Failed to shutdown GraphQL Gateway gracefully:', error.message);
+    process.exit(1);
+  }
+};
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 startServer();

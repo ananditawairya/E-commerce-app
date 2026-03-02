@@ -31,7 +31,7 @@ const registerSchema = Joi.object({
     }),
   role: Joi.string()
     .valid('buyer', 'seller')
-    // CHANGE: Updated default and valid values to match User model schema
+    // Updated default and valid values to match User model schema
     .default('buyer')
     .messages({
       'any.only': 'Role must be either buyer or seller'

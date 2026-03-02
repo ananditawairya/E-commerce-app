@@ -20,6 +20,37 @@ const parseQueryStringArray = (value) => {
 };
 
 class ProductController {
+  /**
+   * Returns product search suggestions.
+   * @param {import('express').Request} req Express request.
+   * @param {import('express').Response} res Express response.
+   * @param {import('express').NextFunction} next Next middleware.
+   * @return {Promise<void>} Completion promise.
+   */
+  async getSearchSuggestions(req, res, next) {
+    try {
+      const {
+        query,
+        q,
+        categories,
+        'categories[]': bracketedCategories,
+        limit,
+      } = req.query;
+      const rawQuery = typeof query === 'string' ? query : q;
+      const parsedCategories = parseQueryStringArray(categories || bracketedCategories);
+      const parsedLimit = Number.parseInt(limit, 10);
+
+      const suggestions = await productService.getSearchSuggestions({
+        query: rawQuery,
+        categories: parsedCategories,
+        limit: Number.isFinite(parsedLimit) ? parsedLimit : undefined,
+      });
+      res.json(suggestions);
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async getProducts(req, res, next) {
     try {
       const {

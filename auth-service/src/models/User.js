@@ -108,7 +108,7 @@ const userSchema = new mongoose.Schema({
   timestamps: true,
 });
 
-// CHANGE: Create indexes on email and username for faster lookups
+// Create indexes on email and username for faster lookups
 userSchema.index({ email: 1 });
 userSchema.index({ phoneNumber: 1 }, { sparse: true });
 
@@ -130,11 +130,11 @@ userSchema.methods.comparePassword = async function (candidatePassword) {
   return await bcrypt.compare(candidatePassword, this.password);
 };
 
-// CHANGE: Configure toJSON to map _id to id and enable virtuals
+// Configure toJSON to map _id to id and enable virtuals
 userSchema.set('toJSON', {
   virtuals: true,
   transform: (doc, ret) => {
-    // CHANGE: Map MongoDB _id to GraphQL id field
+    // Map MongoDB _id to GraphQL id field
     ret.id = ret._id.toString();
     delete ret._id;
     delete ret.__v;

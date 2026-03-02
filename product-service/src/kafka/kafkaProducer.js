@@ -1,5 +1,5 @@
 // backend/product-service/src/kafka/kafkaProducer.js
-// CHANGE: Add product event publishing capabilities
+// Add product event publishing capabilities
 
 const KafkaProducer = require('../../../shared/kafka/KafkaProducer');
 const { TOPICS, createStockDeductedEvent } = require('../../../shared/kafka/events/ProductEvents');
@@ -17,7 +17,7 @@ class ProductServiceProducer {
     return this.producer.disconnect();
   }
 
-  // CHANGE: Publish ProductCreated event
+  // Publish ProductCreated event
   async publishProductCreated(product, correlationId) {
     const event = {
       eventType: 'ProductCreated',
@@ -39,14 +39,14 @@ class ProductServiceProducer {
 
     const message = this.producer.buildMessage(product.id, event, correlationId);
 
-    // CHANGE: Non-critical event - product creation succeeds even if Kafka fails
+    // Non-critical event - product creation succeeds even if Kafka fails
     return this.producer.publish(TOPICS.PRODUCT_CREATED, message, {
       critical: false,
       correlationId,
     });
   }
 
-  // CHANGE: Publish ProductUpdated event
+  // Publish ProductUpdated event
   async publishProductUpdated(product, correlationId) {
     const event = {
       eventType: 'ProductUpdated',
@@ -68,26 +68,26 @@ class ProductServiceProducer {
 
     const message = this.producer.buildMessage(product.id, event, correlationId);
 
-    // CHANGE: Non-critical event
+    // Non-critical event
     return this.producer.publish(TOPICS.PRODUCT_UPDATED, message, {
       critical: false,
       correlationId,
     });
   }
 
-  // CHANGE: Publish StockDeducted event
+  // Publish StockDeducted event
   async publishStockDeducted(productId, variantId, quantity, orderId, correlationId) {
     const event = createStockDeductedEvent(productId, variantId, quantity, orderId);
     const message = this.producer.buildMessage(productId, event, correlationId);
 
-    // CHANGE: Non-critical event - stock deduction already succeeded in DB
+    // Non-critical event - stock deduction already succeeded in DB
     return this.producer.publish(TOPICS.STOCK_DEDUCTED, message, {
       critical: false,
       correlationId,
     });
   }
 
-  // CHANGE: Add stock restored event publisher
+  // Add stock restored event publisher
   async publishStockRestored(productId, variantId, quantity, orderId, correlationId) {
     const event = {
       eventType: 'StockRestored',
@@ -102,7 +102,7 @@ class ProductServiceProducer {
 
     const message = this.producer.buildMessage(productId, event, correlationId);
 
-    // CHANGE: Non-critical event - stock restoration already succeeded in DB
+    // Non-critical event - stock restoration already succeeded in DB
     return this.producer.publish('product.stock.restored', message, {
       critical: false,
       correlationId,

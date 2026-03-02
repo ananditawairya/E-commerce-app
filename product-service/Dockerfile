@@ -1,7 +1,7 @@
 FROM node:18-alpine AS deps
 WORKDIR /app/product-service
 COPY product-service/package*.json /app/product-service/
-RUN npm ci --omit=dev
+RUN npm install --omit=dev
 
 FROM node:18-alpine
 WORKDIR /app/product-service

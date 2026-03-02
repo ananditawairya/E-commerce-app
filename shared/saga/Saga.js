@@ -1,5 +1,5 @@
 // backend/shared/saga/Saga.js
-// CHANGE: Use mongoose instance passed from service, not a new one
+// Use mongoose instance passed from service, not a new one
 
 const sagaStepSchema = {
   stepName: {
@@ -50,9 +50,9 @@ const sagaSchemaDefinition = {
   error: String,
 };
 
-// CHANGE: Export factory function instead of model directly
+// Export factory function instead of model directly
 module.exports = (mongoose) => {
-  // CHANGE: Check if model already exists to avoid OverwriteModelError
+  // Check if model already exists to avoid OverwriteModelError
   if (mongoose.models.Saga) {
     return mongoose.models.Saga;
   }
@@ -61,7 +61,7 @@ module.exports = (mongoose) => {
     timestamps: true,
   });
 
-  // CHANGE: Configure toJSON for GraphQL compatibility
+  // Configure toJSON for GraphQL compatibility
   sagaSchema.set('toJSON', {
     virtuals: true,
     transform: (doc, ret) => {

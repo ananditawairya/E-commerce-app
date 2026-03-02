@@ -1,7 +1,7 @@
 FROM node:18-alpine AS deps
 WORKDIR /app/graphql-gateway
 COPY graphql-gateway/package*.json /app/graphql-gateway/
-RUN npm ci --omit=dev
+RUN npm install --omit=dev
 
 FROM node:18-alpine
 WORKDIR /app/graphql-gateway

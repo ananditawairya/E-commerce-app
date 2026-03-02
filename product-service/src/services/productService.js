@@ -1,620 +1,250 @@
-const Product = require('../models/Product');
-const { sanitizeProductInput } = require('../utils/inputSanitizer');
-const kafkaProducer = require('../kafka/kafkaProducer');
-const productSemanticSearchService = require('./productSemanticSearchService');
 const { v4: uuidv4 } = require('uuid');
 
+const Product = require('../models/Product');
+const kafkaProducer = require('../kafka/kafkaProducer');
+const { sanitizeProductInput } = require('../utils/inputSanitizer');
+const cacheService = require('./cacheService');
+const productSemanticSearchService = require('./productSemanticSearchService');
+const searchEngineService = require('./searchEngineService');
+const catalogOperations = require('./productService/catalogOperations');
+const mutationOperations = require('./productService/mutationOperations');
+const inventoryOperations = require('./productService/inventoryOperations');
+
+/**
+ * Orchestrates product-service domain operations.
+ */
 class ProductService {
-  async getProducts({
-    search,
-    category,
-    categories,
-    minPrice,
-    maxPrice,
-    inStockOnly,
-    sortBy,
-    limit = 20,
-    offset = 0,
-  }) {
-    const normalizedSearch = typeof search === 'string' ? search.trim() : '';
-    const normalizedCategory = typeof category === 'string' ? category.trim() : '';
-    const normalizedCategories = Array.isArray(categories)
-      ? [...new Set(
-          categories
-            .filter((value) => typeof value === 'string')
-            .map((value) => value.trim())
-            .filter(Boolean)
-        )]
-      : [];
-    const normalizedLimit = Number.isFinite(limit) ? Math.min(Math.max(limit, 1), 50) : 20;
-    const normalizedOffset = Number.isFinite(offset) ? Math.max(offset, 0) : 0;
-    const resolvedSortBy = sortBy || (normalizedSearch ? 'RELEVANCE' : 'NEWEST');
-
-    // Hybrid search path:
-    // - semantic ranking for RELEVANCE searches when local embeddings are enabled
-    // - lexical fallback for all other cases or semantic misses/failures
-    if (normalizedSearch && resolvedSortBy === 'RELEVANCE' && productSemanticSearchService.isEnabled()) {
-      try {
-        const semanticProducts = await productSemanticSearchService.searchProducts({
-          search: normalizedSearch,
-          category: normalizedCategory || undefined,
-          categories: normalizedCategories.length > 0 ? normalizedCategories : undefined,
-          minPrice,
-          maxPrice,
-          inStockOnly,
-          limit: normalizedLimit,
-          offset: normalizedOffset,
-        });
-
-        if (Array.isArray(semanticProducts) && semanticProducts.length > 0) {
-          return semanticProducts;
-        }
-      } catch (error) {
-        console.warn('Semantic search failed, falling back to lexical search:', error.message);
-      }
-    }
-
-    const query = { isActive: true };
-
-    if (normalizedSearch) {
-      query.$text = { $search: normalizedSearch };
-    }
-
-    if (normalizedCategories.length > 0) {
-      query.category = { $in: normalizedCategories };
-    } else if (normalizedCategory) {
-      query.category = normalizedCategory;
-    }
-
-    if (typeof inStockOnly === 'boolean' && inStockOnly) {
-      query['variants.stock'] = { $gt: 0 };
-    }
-
-    const hasMinPrice = Number.isFinite(minPrice);
-    const hasMaxPrice = Number.isFinite(maxPrice);
-    if (hasMinPrice || hasMaxPrice) {
-      let safeMin = hasMinPrice ? Math.max(minPrice, 0) : undefined;
-      let safeMax = hasMaxPrice ? Math.max(maxPrice, 0) : undefined;
-
-      if (hasMinPrice && hasMaxPrice && safeMin > safeMax) {
-        [safeMin, safeMax] = [safeMax, safeMin];
-      }
-
-      query.basePrice = {};
-      if (Number.isFinite(safeMin)) query.basePrice.$gte = safeMin;
-      if (Number.isFinite(safeMax)) query.basePrice.$lte = safeMax;
-    }
-
-    let sortConfig = { createdAt: -1 };
-    let useCaseInsensitiveCollation = false;
-    let useTextScoreProjection = false;
-
-    switch (resolvedSortBy) {
-      case 'RELEVANCE':
-        if (query.$text) {
-          sortConfig = { score: { $meta: 'textScore' }, createdAt: -1 };
-          useTextScoreProjection = true;
-        }
-        break;
-      case 'PRICE_LOW_TO_HIGH':
-        sortConfig = { basePrice: 1, createdAt: -1 };
-        break;
-      case 'PRICE_HIGH_TO_LOW':
-        sortConfig = { basePrice: -1, createdAt: -1 };
-        break;
-      case 'NAME_A_TO_Z':
-        sortConfig = { name: 1, createdAt: -1 };
-        useCaseInsensitiveCollation = true;
-        break;
-      case 'NAME_Z_TO_A':
-        sortConfig = { name: -1, createdAt: -1 };
-        useCaseInsensitiveCollation = true;
-        break;
-      case 'NEWEST':
-      default:
-        sortConfig = { createdAt: -1 };
-        break;
-    }
-
-    let productQuery = useTextScoreProjection
-      ? Product.find(query, { score: { $meta: 'textScore' } })
-      : Product.find(query);
-
-    productQuery = productQuery
-      .sort(sortConfig)
-      .limit(normalizedLimit)
-      .skip(normalizedOffset);
-
-    if (useCaseInsensitiveCollation) {
-      productQuery = productQuery.collation({ locale: 'en', strength: 2 });
-    }
-
-    const products = await productQuery;
-
-    return products;
+  constructor() {
+    this.deps = {
+      Product,
+      kafkaProducer,
+      sanitizeProductInput,
+      cacheService,
+      productSemanticSearchService,
+      searchEngineService,
+      uuidGenerator: uuidv4,
+    };
   }
 
-  async getProductById(id) {
-    const product = await Product.findById(id);
-    if (!product) {
-      const error = new Error('Product not found');
-      error.code = 'PRODUCT_NOT_FOUND';
-      throw error;
-    }
-    return product;
+  /**
+   * Fetches product listings with filters and pagination.
+   * @param {object} params Query filters.
+   * @return {Promise<object[]>} Product list.
+   */
+  getProducts(params) {
+    return catalogOperations.getProducts(this.deps, params);
   }
 
-  async getProductsBySeller(sellerId) {
-    const products = await Product.find({ sellerId })
-      .sort({ createdAt: -1 });
-    return products;
+  /**
+   * Fetches one product by id.
+   * @param {string} id Product id.
+   * @return {Promise<object>} Product document.
+   */
+  getProductById(id) {
+    return catalogOperations.getProductById(this.deps, id);
   }
 
-  async getCategories() {
-    const categories = await Product.distinct('category');
-    return categories
-      .filter((value) => typeof value === 'string' && value.trim())
-      .sort((a, b) => a.localeCompare(b));
+  /**
+   * Fetches all products belonging to one seller.
+   * @param {string} sellerId Seller id.
+   * @return {Promise<object[]>} Product list.
+   */
+  getProductsBySeller(sellerId) {
+    return catalogOperations.getProductsBySeller(this.deps, sellerId);
   }
 
-  async getSemanticSearchStatus() {
-    return productSemanticSearchService.getStatus();
+  /**
+   * Fetches distinct category names.
+   * @return {Promise<string[]>} Category list.
+   */
+  getCategories() {
+    return catalogOperations.getCategories(this.deps);
   }
 
-  async reindexSemanticSearch() {
-    return productSemanticSearchService.reindexAllActiveProducts();
+  /**
+   * Fetches search-as-you-type suggestions.
+   * @param {{
+   *   query: string,
+   *   limit?: number,
+   *   categories?: string[],
+   * }} params Suggestion params.
+   * @return {Promise<Array<{text: string, category: string|null, score: number|null, source: string}>>}
+   *     Suggestion list.
+   */
+  getSearchSuggestions(params) {
+    return catalogOperations.getSearchSuggestions(this.deps, params);
   }
 
-  async createProduct(sellerId, input, correlationId) {
-    const sanitizedInput = sanitizeProductInput(input);
+  /**
+   * Retrieves semantic search index status.
+   * @return {Promise<object>} Status payload.
+   */
+  getSemanticSearchStatus() {
+    return catalogOperations.getSemanticSearchStatus(this.deps);
+  }
 
-    if (!sanitizedInput.name || !sanitizedInput.description || !sanitizedInput.category) {
-      const error = new Error('Missing required fields: name, description, and category are required');
-      error.code = 'MISSING_FIELDS';
-      throw error;
-    }
+  /**
+   * Triggers semantic search reindex.
+   * @return {Promise<object>} Reindex summary.
+   */
+  reindexSemanticSearch() {
+    return catalogOperations.reindexSemanticSearch(this.deps);
+  }
 
-    if (typeof sanitizedInput.basePrice !== 'number' || sanitizedInput.basePrice < 0) {
-      const error = new Error('Base price must be a valid positive number');
-      error.code = 'INVALID_PRICE';
-      throw error;
-    }
+  /**
+   * Creates a product.
+   * @param {string} sellerId Seller id.
+   * @param {object} input Product payload.
+   * @param {string} correlationId Correlation id.
+   * @return {Promise<object>} Created product.
+   */
+  createProduct(sellerId, input, correlationId) {
+    return mutationOperations.createProduct(this.deps, sellerId, input, correlationId);
+  }
 
-    if (!sanitizedInput.variants || sanitizedInput.variants.length === 0) {
-      const error = new Error('At least one product variant is required');
-      error.code = 'MISSING_VARIANTS';
-      throw error;
-    }
-
-    sanitizedInput.variants.forEach((variant, index) => {
-      if (typeof variant.stock !== 'number' || variant.stock < 0) {
-        const error = new Error(`Variant ${index + 1} must have a valid stock quantity`);
-        error.code = 'INVALID_STOCK';
-        throw error;
-      }
-    });
-
-    const product = new Product({
-      ...sanitizedInput,
+  /**
+   * Updates a product.
+   * @param {string} productId Product id.
+   * @param {string} sellerId Seller id.
+   * @param {object} input Product payload.
+   * @param {string} correlationId Correlation id.
+   * @return {Promise<object>} Updated product.
+   */
+  updateProduct(productId, sellerId, input, correlationId) {
+    return mutationOperations.updateProduct(
+      this.deps,
+      productId,
       sellerId,
-    });
-
-    await product.save();
-
-    setImmediate(async () => {
-      try {
-        await productSemanticSearchService.upsertProductEmbedding(product.toJSON());
-      } catch (error) {
-        console.warn('Failed to upsert product search embedding after create:', error.message);
-      }
-
-      try {
-        await kafkaProducer.publishProductCreated(
-          product.toJSON(),
-          correlationId || `product-create-${Date.now()}`
-        );
-      } catch (error) {
-        console.error('Failed to publish product created event:', error);
-      }
-    });
-
-    return product;
-  }
-
-  async updateProduct(productId, sellerId, input, correlationId) {
-    const product = await Product.findOne({ _id: productId, sellerId });
-    if (!product) {
-      const error = new Error('Product not found or unauthorized');
-      error.code = 'PRODUCT_NOT_FOUND';
-      throw error;
-    }
-
-    const sanitizedInput = sanitizeProductInput(input);
-
-    if (sanitizedInput.variants !== undefined) {
-      if (!sanitizedInput.variants || sanitizedInput.variants.length === 0) {
-        const error = new Error('At least one product variant is required');
-        error.code = 'MISSING_VARIANTS';
-        throw error;
-      }
-
-      sanitizedInput.variants.forEach((variant, index) => {
-        if (typeof variant.stock !== 'number' || variant.stock < 0) {
-          const error = new Error(`Variant ${index + 1} must have a valid stock quantity`);
-          error.code = 'INVALID_STOCK';
-          throw error;
-        }
-      });
-    }
-
-    Object.assign(product, sanitizedInput);
-    await product.save();
-
-    setImmediate(async () => {
-      try {
-        await productSemanticSearchService.upsertProductEmbedding(product.toJSON());
-      } catch (error) {
-        console.warn('Failed to upsert product search embedding after update:', error.message);
-      }
-
-      try {
-        await kafkaProducer.publishProductUpdated(
-          product.toJSON(),
-          correlationId || `product-update-${Date.now()}`
-        );
-      } catch (error) {
-        console.error('Failed to publish product updated event:', error);
-      }
-    });
-
-    return product;
-  }
-
-  async deleteProduct(productId, sellerId) {
-    const result = await Product.deleteOne({ _id: productId, sellerId });
-
-    if (result.deletedCount === 0) {
-      const error = new Error('Product not found or unauthorized');
-      error.code = 'PRODUCT_NOT_FOUND';
-      throw error;
-    }
-
-    setImmediate(async () => {
-      try {
-        await productSemanticSearchService.removeProductEmbedding(productId);
-      } catch (error) {
-        console.warn('Failed to delete product search embedding after delete:', error.message);
-      }
-    });
-
-    return true;
-  }
-
-  async reserveStock(productId, variantId, quantity, orderId, reservationTimeoutMs = 300000, correlationId) {
-    const reservationId = uuidv4();
-    const expiresAt = new Date(Date.now() + reservationTimeoutMs);
-
-    // CHANGE: Simplified atomic operation using only stock field
-    const updateResult = await Product.updateOne(
-      {
-        _id: productId,
-        'variants._id': variantId,
-        'variants.stock': { $gte: quantity },
-      },
-      {
-        $inc: { 'variants.$[variant].stock': -quantity },
-        $push: {
-          'variants.$[variant].reservations': {
-            reservationId,
-            orderId,
-            quantity,
-            expiresAt,
-            status: 'active',
-          }
-        }
-      },
-      {
-        arrayFilters: [{ 'variant._id': variantId }],
-      }
+      input,
+      correlationId
     );
+  }
 
-    if (updateResult.modifiedCount === 0) {
-      const error = new Error('Insufficient stock for reservation');
-      error.code = 'INSUFFICIENT_STOCK';
-      throw error;
-    }
+  /**
+   * Deletes a seller-owned product.
+   * @param {string} productId Product id.
+   * @param {string} sellerId Seller id.
+   * @return {Promise<boolean>} True when deleted.
+   */
+  deleteProduct(productId, sellerId) {
+    return mutationOperations.deleteProduct(this.deps, productId, sellerId);
+  }
 
-    console.log(`✅ Stock reserved: ${quantity} units for order ${orderId} (reservation: ${reservationId})`);
-
-    return {
-      reservationId,
+  /**
+   * Reserves stock for a pending order.
+   * @param {string} productId Product id.
+   * @param {string} variantId Variant id.
+   * @param {number} quantity Quantity.
+   * @param {string} orderId Order id.
+   * @param {number} reservationTimeoutMs Reservation timeout in milliseconds.
+   * @param {string} correlationId Correlation id.
+   * @return {Promise<object>} Reservation details.
+   */
+  reserveStock(
+    productId,
+    variantId,
+    quantity,
+    orderId,
+    reservationTimeoutMs = 300000,
+    correlationId
+  ) {
+    return inventoryOperations.reserveStock(
+      this.deps,
       productId,
       variantId,
       quantity,
-      expiresAt,
       orderId,
-    };
-  }
-
-  async confirmReservation(productId, variantId, reservationId, orderId, correlationId) {
-    const product = await Product.findById(productId);
-    if (!product) {
-      const error = new Error('Product not found');
-      error.code = 'PRODUCT_NOT_FOUND';
-      throw error;
-    }
-
-    const variant = product.variants.find(v => v._id === variantId);
-    if (!variant) {
-      const error = new Error('Variant not found');
-      error.code = 'VARIANT_NOT_FOUND';
-      throw error;
-    }
-
-    const reservation = variant.reservations.find(r => r.reservationId === reservationId);
-    if (!reservation || reservation.status !== 'active') {
-      const error = new Error('Reservation not found or already processed');
-      error.code = 'RESERVATION_NOT_FOUND';
-      throw error;
-    }
-
-    // CHANGE: Mark reservation as confirmed without additional stock changes
-    const updateResult = await Product.updateOne(
-      {
-        _id: productId,
-        'variants._id': variantId,
-        'variants.reservations.reservationId': reservationId,
-        'variants.reservations.status': 'active',
-      },
-      {
-        $set: {
-          'variants.$[variant].reservations.$[reservation].status': 'confirmed',
-        }
-      },
-      {
-        arrayFilters: [
-          { 'variant._id': variantId },
-          { 'reservation.reservationId': reservationId }
-        ],
-      }
+      reservationTimeoutMs,
+      correlationId
     );
-
-    if (updateResult.modifiedCount === 0) {
-      const error = new Error('Failed to confirm reservation');
-      error.code = 'RESERVATION_CONFIRMATION_FAILED';
-      throw error;
-    }
-
-    setImmediate(async () => {
-      try {
-        await kafkaProducer.publishStockDeducted(
-          productId,
-          variantId,
-          reservation.quantity,
-          orderId,
-          correlationId || `stock-confirm-${Date.now()}`
-        );
-      } catch (error) {
-        console.error('Failed to publish stock deducted event:', error);
-      }
-    });
-
-    console.log(`✅ Reservation confirmed: ${reservationId} - ${reservation.quantity} units deducted`);
-    return true;
   }
 
-  async releaseReservation(productId, variantId, reservationId, correlationId) {
-    const product = await Product.findById(productId);
-    if (!product) {
-      console.warn(`⚠️ Product ${productId} not found for reservation release`);
-      return false;
-    }
-
-    const variant = product.variants.find(v => v._id === variantId);
-    if (!variant) {
-      console.warn(`⚠️ Variant ${variantId} not found for reservation release`);
-      return false;
-    }
-
-    const reservation = variant.reservations.find(r => r.reservationId === reservationId);
-    if (!reservation || reservation.status !== 'active') {
-      console.warn(`⚠️ Reservation ${reservationId} not found or already processed`);
-      return false;
-    }
-
-    // CHANGE: Restore stock and mark reservation as released
-    const updateResult = await Product.updateOne(
-      {
-        _id: productId,
-        'variants._id': variantId,
-        'variants.reservations.reservationId': reservationId,
-        'variants.reservations.status': 'active',
-      },
-      {
-        $inc: { 'variants.$[variant].stock': reservation.quantity },
-        $set: {
-          'variants.$[variant].reservations.$[reservation].status': 'released',
-        }
-      },
-      {
-        arrayFilters: [
-          { 'variant._id': variantId },
-          { 'reservation.reservationId': reservationId }
-        ],
-      }
-    );
-
-    if (updateResult.modifiedCount === 0) {
-      console.warn(`⚠️ Reservation ${reservationId} not found or already processed`);
-      return false;
-    }
-
-    console.log(`🔓 Reservation released: ${reservationId}`);
-    return true;
-  }
-
-  async deductStock(productId, variantId, quantity, orderId, correlationId) {
-    const product = await Product.findById(productId);
-    if (!product) {
-      const error = new Error('Product not found');
-      error.code = 'PRODUCT_NOT_FOUND';
-      throw error;
-    }
-
-    const variant = product.variants.find(v => v._id === variantId);
-    if (!variant) {
-      const error = new Error('Variant not found');
-      error.code = 'VARIANT_NOT_FOUND';
-      throw error;
-    }
-
-    if (variant.stock < quantity) {
-      const error = new Error(`Insufficient stock. Available: ${variant.stock}, Requested: ${quantity}`);
-      error.code = 'INSUFFICIENT_STOCK';
-      error.available = variant.stock;
-      error.requested = quantity;
-      throw error;
-    }
-
-    const updateResult = await Product.updateOne(
-      {
-        _id: productId,
-        'variants._id': variantId,
-        'variants.stock': { $gte: quantity },
-      },
-      {
-        $inc: { 'variants.$[elem].stock': -quantity },
-      },
-      {
-        arrayFilters: [{ 'elem._id': variantId }],
-      }
-    );
-
-    if (updateResult.modifiedCount === 0) {
-      const error = new Error('Stock deduction failed. Stock may have changed during transaction');
-      error.code = 'STOCK_DEDUCTION_FAILED';
-      throw error;
-    }
-
-    setImmediate(async () => {
-      try {
-        await kafkaProducer.publishStockDeducted(
-          productId,
-          variantId,
-          quantity,
-          orderId,
-          correlationId || `stock-deduct-${Date.now()}`
-        );
-      } catch (error) {
-        console.error('Failed to publish stock deducted event:', error);
-      }
-    });
-
-    return true;
-  }
-
-  async restoreStock(productId, variantId, quantity, orderId, correlationId) {
-    const product = await Product.findById(productId);
-    if (!product) {
-      const error = new Error('Product not found');
-      error.code = 'PRODUCT_NOT_FOUND';
-      throw error;
-    }
-
-    const variantIndex = product.variants.findIndex(v => v._id === variantId);
-    if (variantIndex === -1) {
-      const error = new Error(`Variant ${variantId} not found in product ${productId}`);
-      error.code = 'VARIANT_NOT_FOUND';
-      throw error;
-    }
-
-    console.log(`🔄 Restoring stock for product ${productId}, variant ${variantId}:`, {
-      variantName: product.variants[variantIndex].name,
-      currentStock: product.variants[variantIndex].stock,
-      quantityToRestore: quantity,
-      orderId,
-    });
-
-    const updateResult = await Product.updateOne(
-      {
-        _id: productId,
-        'variants._id': variantId,
-      },
-      {
-        $inc: { 'variants.$[elem].stock': quantity },
-      },
-      {
-        arrayFilters: [{ 'elem._id': variantId }],
-      }
-    );
-
-    if (updateResult.modifiedCount === 0) {
-      const error = new Error('Stock restoration failed');
-      error.code = 'STOCK_RESTORATION_FAILED';
-      throw error;
-    }
-
-    const updatedProduct = await Product.findById(productId);
-    const updatedVariant = updatedProduct.variants.find(v => v._id === variantId);
-    
-    console.log(`✅ Stock restored successfully:`, {
-      variantName: updatedVariant.name,
-      newStock: updatedVariant.stock,
-      orderId,
-    });
-    
-    setImmediate(async () => {
-      try {
-        await kafkaProducer.publishStockRestored(
-          productId,
-          variantId,
-          quantity,
-          orderId,
-          correlationId || `stock-restore-${Date.now()}`
-        );
-      } catch (error) {
-        console.error('Failed to publish stock restored event:', error);
-      }
-    });
-
-    return true;
-  }
-
-  async getProductStock(productId, variantId) {
-    const product = await Product.findById(productId);
-    if (!product) {
-      const error = new Error('Product not found');
-      error.code = 'PRODUCT_NOT_FOUND';
-      throw error;
-    }
-
-    if (variantId) {
-      const variant = product.variants.find(v => v._id === variantId);
-      if (!variant) {
-        const error = new Error('Variant not found');
-        error.code = 'VARIANT_NOT_FOUND';
-        throw error;
-      }
-      
-      // CHANGE: Return only stock field consistently
-      return {
-        productId,
-        productName: product.name,
-        variantId,
-        variantName: variant.name,
-        stock: variant.stock,
-        sellerId: product.sellerId,
-      };
-    }
-
-    // CHANGE: Return total stock across all variants
-    const totalStock = product.variants.reduce((sum, v) => sum + v.stock, 0);
-    return {
+  /**
+   * Confirms a stock reservation.
+   * @param {string} productId Product id.
+   * @param {string} variantId Variant id.
+   * @param {string} reservationId Reservation id.
+   * @param {string} orderId Order id.
+   * @param {string} correlationId Correlation id.
+   * @return {Promise<boolean>} True when confirmed.
+   */
+  confirmReservation(productId, variantId, reservationId, orderId, correlationId) {
+    return inventoryOperations.confirmReservation(
+      this.deps,
       productId,
-      productName: product.name,
-      stock: totalStock,
-      sellerId: product.sellerId,
-    };
+      variantId,
+      reservationId,
+      orderId,
+      correlationId
+    );
+  }
+
+  /**
+   * Releases a pending reservation.
+   * @param {string} productId Product id.
+   * @param {string} variantId Variant id.
+   * @param {string} reservationId Reservation id.
+   * @param {string} correlationId Correlation id.
+   * @return {Promise<boolean>} True when released.
+   */
+  releaseReservation(productId, variantId, reservationId, correlationId) {
+    return inventoryOperations.releaseReservation(
+      this.deps,
+      productId,
+      variantId,
+      reservationId,
+      correlationId
+    );
+  }
+
+  /**
+   * Deducts stock.
+   * @param {string} productId Product id.
+   * @param {string} variantId Variant id.
+   * @param {number} quantity Quantity.
+   * @param {string} orderId Order id.
+   * @param {string} correlationId Correlation id.
+   * @return {Promise<boolean>} True when deducted.
+   */
+  deductStock(productId, variantId, quantity, orderId, correlationId) {
+    return inventoryOperations.deductStock(
+      this.deps,
+      productId,
+      variantId,
+      quantity,
+      orderId,
+      correlationId
+    );
+  }
+
+  /**
+   * Restores stock.
+   * @param {string} productId Product id.
+   * @param {string} variantId Variant id.
+   * @param {number} quantity Quantity.
+   * @param {string} orderId Order id.
+   * @param {string} correlationId Correlation id.
+   * @return {Promise<boolean>} True when restored.
+   */
+  restoreStock(productId, variantId, quantity, orderId, correlationId) {
+    return inventoryOperations.restoreStock(
+      this.deps,
+      productId,
+      variantId,
+      quantity,
+      orderId,
+      correlationId
+    );
+  }
+
+  /**
+   * Retrieves current stock details.
+   * @param {string} productId Product id.
+   * @param {string=} variantId Variant id.
+   * @return {Promise<object>} Stock payload.
+   */
+  getProductStock(productId, variantId) {
+    return inventoryOperations.getProductStock(this.deps, productId, variantId);
   }
 }
 
