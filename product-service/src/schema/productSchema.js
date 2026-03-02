@@ -72,6 +72,7 @@ const typeDefs = gql`
     products(
       search: String
       category: String
+      categories: [String!]
       minPrice: Float
       maxPrice: Float
       inStockOnly: Boolean

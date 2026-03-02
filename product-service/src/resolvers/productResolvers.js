@@ -1,5 +1,4 @@
 // backend/product-service/src/resolvers/productResolvers.js
-// CHANGE: Modified to call REST API instead of direct database access
 
 const axios = require('axios');
 const { requireSeller } = require('../middleware/auth');
@@ -14,6 +13,7 @@ const resolvers = {
       {
         search,
         category,
+        categories,
         minPrice,
         maxPrice,
         inStockOnly,
@@ -24,13 +24,25 @@ const resolvers = {
       context
     ) => {
       try {
+        const normalizedCategories = Array.isArray(categories)
+          ? categories
+              .filter((value) => typeof value === 'string')
+              .map((value) => value.trim())
+              .filter(Boolean)
+          : [];
+
         const params = {
           search,
-          category,
           sortBy,
           limit,
           offset,
         };
+
+        if (normalizedCategories.length > 0) {
+          params.categories = normalizedCategories;
+        } else if (typeof category === 'string' && category.trim()) {
+          params.category = category.trim();
+        }
 
         if (typeof minPrice === 'number') {
           params.minPrice = minPrice;
@@ -185,9 +197,7 @@ const resolvers = {
   },
 
   Variant: {
-    // CHANGE: Removed parent() calls - access parent product from GraphQL info context
     effectiveDescription: (variant, _, __, info) => {
-      // CHANGE: Get parent product from the source object in GraphQL execution
       const product = info.path.prev && info.path.prev.key === 'variants'
         ? info.path.prev.prev.result
         : null;
@@ -196,7 +206,6 @@ const resolvers = {
     },
 
     effectiveImages: (variant, _, __, info) => {
-      // CHANGE: Get parent product from the source object in GraphQL execution
       const product = info.path.prev && info.path.prev.key === 'variants'
         ? info.path.prev.prev.result
         : null;
@@ -207,7 +216,6 @@ const resolvers = {
     },
 
     effectivePrice: (variant, _, __, info) => {
-      // CHANGE: Get parent product from the source object in GraphQL execution
       const product = info.path.prev && info.path.prev.key === 'variants'
         ? info.path.prev.prev.result
         : null;

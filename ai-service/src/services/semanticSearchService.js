@@ -831,6 +831,142 @@ class SemanticSearchService {
             error: semantic.error,
         };
     }
+
+    /**
+     * Finds similar products for a source product using vector similarity.
+     * @param {string} productId Source product identifier.
+     * @param {{
+     *   limit?: number,
+     *   minScore?: number,
+     *   category?: string,
+     *   minPrice?: number,
+     *   maxPrice?: number,
+     *   inStockOnly?: boolean,
+     * }} options Optional filters and ranking controls.
+     * @return {Promise<{
+     *   results: Array<{
+     *     productId: string,
+     *     score: number,
+     *     category: string|null,
+     *     basePrice: number,
+     *   }>,
+     *   sourceCategory: string|null,
+     *   cacheHit: boolean,
+     *   semanticUsed: boolean,
+     *   reason: string,
+     *   error?: string,
+     * }>} Similarity result payload.
+     */
+    async getSimilarProductsByProductId(productId, options = {}) {
+        const cleanProductId = sanitizeText(productId);
+        const limit = Number.parseInt(options.limit || '30', 10);
+
+        if (!cleanProductId) {
+            return {
+                results: [],
+                sourceCategory: null,
+                cacheHit: false,
+                semanticUsed: false,
+                reason: 'empty_product_id',
+            };
+        }
+
+        if (!this.isEnabled()) {
+            return {
+                results: [],
+                sourceCategory: null,
+                cacheHit: false,
+                semanticUsed: false,
+                reason: 'disabled',
+            };
+        }
+
+        try {
+            const indexState = await this.ensureIndex({
+                force: false,
+                waitForBuild: false,
+                reason: 'similar_products',
+            });
+
+            if (!indexState.ready || this.index.products.length === 0) {
+                return {
+                    results: [],
+                    sourceCategory: null,
+                    cacheHit: false,
+                    semanticUsed: false,
+                    reason: 'index_warming',
+                };
+            }
+
+            const sourceProduct = this.index.products.find(
+                (product) => String(product.id) === cleanProductId
+            );
+
+            if (!sourceProduct || !Array.isArray(sourceProduct.vector) || sourceProduct.vector.length === 0) {
+                return {
+                    results: [],
+                    sourceCategory: sourceProduct?.category || null,
+                    cacheHit: false,
+                    semanticUsed: false,
+                    reason: 'source_not_indexed',
+                };
+            }
+
+            const minScore = Number.isFinite(options.minScore) ? options.minScore : 0;
+            const normalizedLimit = Number.isFinite(limit) ? clamp(limit, 1, 200) : 30;
+            const candidates = [];
+
+            this.index.products.forEach((product) => {
+                if (String(product.id) === cleanProductId) {
+                    return;
+                }
+
+                if (!this.applyFilters(product, options)) {
+                    return;
+                }
+
+                const rawCosine = cosineSimilarityNormalized(sourceProduct.vector, product.vector);
+                const normalizedCosine = clamp((rawCosine + 1) / 2, 0, 1);
+
+                if (normalizedCosine < minScore) {
+                    return;
+                }
+
+                candidates.push({
+                    productId: product.id,
+                    score: Number(normalizedCosine.toFixed(6)),
+                    category: product.category || null,
+                    basePrice: Number.isFinite(product.basePrice) ? product.basePrice : 0,
+                });
+            });
+
+            return {
+                results: candidates
+                    .sort((a, b) => b.score - a.score)
+                    .slice(0, normalizedLimit),
+                sourceCategory: sourceProduct.category || null,
+                cacheHit: Boolean(indexState.cacheHit),
+                semanticUsed: true,
+                reason: 'ok',
+            };
+        } catch (error) {
+            const errorMessage = extractErrorMessage(error);
+            this.lastError = {
+                message: errorMessage,
+                at: new Date().toISOString(),
+                reason: 'similar_products',
+            };
+
+            return {
+                results: [],
+                sourceCategory: null,
+                cacheHit: false,
+                semanticUsed: false,
+                reason: 'error',
+                error: errorMessage,
+            };
+        }
+    }
 }
 
 module.exports = new SemanticSearchService();

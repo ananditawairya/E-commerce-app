@@ -1,7 +1,23 @@
 // backend/product-service/src/api/controllers/productController.js
-// CHANGE: Pass correlation ID to service layer for Kafka events
-
 const productService = require('../../services/productService');
+
+const parseQueryStringArray = (value) => {
+  if (Array.isArray(value)) {
+    return value
+      .filter((item) => typeof item === 'string')
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+
+  if (typeof value === 'string' && value.trim()) {
+    return value
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+
+  return [];
+};
 
 class ProductController {
   async getProducts(req, res, next) {
@@ -9,6 +25,8 @@ class ProductController {
       const {
         search,
         category,
+        categories,
+        'categories[]': bracketedCategories,
         minPrice,
         maxPrice,
         inStockOnly,
@@ -21,6 +39,9 @@ class ProductController {
       const parsedOffset = Number.parseInt(offset, 10);
       const parsedMinPrice = Number.parseFloat(minPrice);
       const parsedMaxPrice = Number.parseFloat(maxPrice);
+      const parsedCategories = parseQueryStringArray(
+        categories || bracketedCategories
+      );
 
       let parsedInStockOnly;
       if (inStockOnly === 'true') parsedInStockOnly = true;
@@ -29,6 +50,7 @@ class ProductController {
       const products = await productService.getProducts({
         search,
         category,
+        categories: parsedCategories,
         minPrice: Number.isFinite(parsedMinPrice) ? parsedMinPrice : undefined,
         maxPrice: Number.isFinite(parsedMaxPrice) ? parsedMaxPrice : undefined,
         inStockOnly: parsedInStockOnly,
@@ -104,7 +126,6 @@ class ProductController {
 
       req.log.info({ sellerId, productName: input.name }, 'Creating product');
 
-      // CHANGE: Pass correlation ID to service for Kafka event
       const product = await productService.createProduct(sellerId, input, req.correlationId);
 
       req.log.info({ productId: product._id, sellerId }, 'Product created successfully');
@@ -122,7 +143,6 @@ class ProductController {
 
       req.log.info({ productId: id, sellerId }, 'Updating product');
 
-      // CHANGE: Pass correlation ID to service for Kafka event
       const product = await productService.updateProduct(id, sellerId, input, req.correlationId);
 
       req.log.info({ productId: id, sellerId }, 'Product updated successfully');
@@ -162,7 +182,6 @@ class ProductController {
         orderId,
       }, 'Deducting stock');
 
-      // CHANGE: Pass correlation ID to service for Kafka event
       await productService.deductStock(id, variantId, quantity, orderId, req.correlationId);
 
       req.log.info({
@@ -190,7 +209,6 @@ class ProductController {
     }
   }
 
-  // CHANGE: Add restore stock controller method for order cancellations
   async restoreStock(req, res, next) {
     try {
       const { id } = req.params;

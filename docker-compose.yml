@@ -92,6 +92,20 @@ services:
       timeout: 5s
       retries: 5
 
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - ecommerce-network
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 20s
+
 networks:
   ecommerce-network:
     driver: bridge
@@ -101,3 +115,4 @@ volumes:
   zookeeper_log:
   kafka_data:
   mongodb_data:
+  ollama_data:

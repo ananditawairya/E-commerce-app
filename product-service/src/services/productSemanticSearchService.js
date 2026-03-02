@@ -56,10 +56,21 @@ class ProductSemanticSearchService {
     return Boolean(SEARCH_SEMANTIC_ENABLED && localEmbeddingService.isEnabled());
   }
 
-  buildFilter({ category, minPrice, maxPrice, inStockOnly }) {
+  buildFilter({ category, categories, minPrice, maxPrice, inStockOnly }) {
     const filter = { isActive: true };
 
-    if (typeof category === 'string' && category.trim()) {
+    const normalizedCategories = Array.isArray(categories)
+      ? [...new Set(
+          categories
+            .filter((value) => typeof value === 'string')
+            .map((value) => value.trim())
+            .filter(Boolean)
+        )]
+      : [];
+
+    if (normalizedCategories.length > 0) {
+      filter.category = { $in: normalizedCategories };
+    } else if (typeof category === 'string' && category.trim()) {
       filter.category = category.trim();
     }
 
@@ -190,6 +201,7 @@ class ProductSemanticSearchService {
   async searchProducts({
     search,
     category,
+    categories,
     minPrice,
     maxPrice,
     inStockOnly,
@@ -206,7 +218,13 @@ class ProductSemanticSearchService {
       return [];
     }
 
-    const filter = this.buildFilter({ category, minPrice, maxPrice, inStockOnly });
+    const filter = this.buildFilter({
+      category,
+      categories,
+      minPrice,
+      maxPrice,
+      inStockOnly,
+    });
     const candidates = await Product.find(filter)
       .select('_id sellerId name description category basePrice images variants isActive createdAt updatedAt')
       .sort({ createdAt: -1 })
@@ -277,4 +295,3 @@ class ProductSemanticSearchService {
 }
 
 module.exports = new ProductSemanticSearchService();
-

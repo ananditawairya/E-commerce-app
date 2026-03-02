@@ -3,6 +3,7 @@
 
 const UserBehavior = require('../models/UserBehavior');
 const ProductScore = require('../models/ProductScore');
+const semanticSearchService = require('./semanticSearchService');
 
 const VALID_EVENT_TYPES = new Set([
     'view',
@@ -18,6 +19,73 @@ const EVENT_TYPE_ALIASES = {
     remove_from_cart: 'cart_remove',
     cartadded: 'cart_add',
     cartremoved: 'cart_remove',
+};
+
+const SIMILAR_PRODUCTS_SIGNAL_WEIGHTS = Object.freeze({
+    embedding: 0.55,
+    category: 0.2,
+    coPurchase: 0.15,
+    popularity: 0.1,
+});
+
+const SIMILAR_PRODUCTS_MIN_EMBEDDING_SCORE = Number.parseFloat(
+    process.env.AI_SIMILAR_MIN_EMBEDDING_SCORE || '0.34'
+);
+
+const clamp = (value, min, max) => {
+    return Math.max(min, Math.min(max, value));
+};
+
+const normalizeCategoryValue = (value) => {
+    return String(value || '')
+        .trim()
+        .toLowerCase();
+};
+
+const tokenizeCategory = (value) => {
+    return normalizeCategoryValue(value)
+        .replace(/[^a-z0-9]+/g, ' ')
+        .split(/\s+/)
+        .filter(Boolean);
+};
+
+const computeCategorySimilarity = (sourceCategory, candidateCategory) => {
+    const source = normalizeCategoryValue(sourceCategory);
+    const candidate = normalizeCategoryValue(candidateCategory);
+
+    if (!source || !candidate) {
+        return 0;
+    }
+
+    if (source === candidate) {
+        return 1;
+    }
+
+    if (source.includes(candidate) || candidate.includes(source)) {
+        return 0.75;
+    }
+
+    const sourceTokens = new Set(tokenizeCategory(source));
+    const candidateTokens = tokenizeCategory(candidate);
+
+    if (sourceTokens.size === 0 || candidateTokens.length === 0) {
+        return 0;
+    }
+
+    const commonTokenCount = candidateTokens.reduce((count, token) => {
+        return sourceTokens.has(token) ? count + 1 : count;
+    }, 0);
+    const overlapRatio = commonTokenCount / Math.max(sourceTokens.size, candidateTokens.length);
+
+    return clamp(overlapRatio * 0.7, 0, 0.7);
+};
+
+const normalizeByMax = (value, maxValue) => {
+    if (!Number.isFinite(value) || !Number.isFinite(maxValue) || maxValue <= 0) {
+        return 0;
+    }
+
+    return clamp(value / maxValue, 0, 1);
 };
 
 class RecommendationService {
@@ -277,88 +345,368 @@ class RecommendationService {
         }));
     }
 
-    /**
-     * Get similar products based on category and co-purchase patterns
-     */
-    async getSimilarProducts(productId, limit = 10) {
-        try {
-            // Get the product's category
-            const productBehavior = await UserBehavior.findOne({ productId });
-            const category = productBehavior?.category;
+    normalizeLimit(limit, fallback = 10, max = 50) {
+        const parsed = Number.parseInt(limit, 10);
+        if (!Number.isFinite(parsed) || parsed <= 0) {
+            return fallback;
+        }
 
-            // Find products frequently purchased together
-            const coPurchased = await UserBehavior.aggregate([
-                {
-                    $match: {
-                        productId,
-                        eventType: 'purchase',
-                    },
+        return Math.min(parsed, max);
+    }
+
+    async getMostRecentProductCategory(productId) {
+        const latestBehavior = await UserBehavior.findOne({
+            productId,
+            category: { $nin: [null, ''] },
+        })
+            .sort({ createdAt: -1 })
+            .select('category')
+            .lean();
+
+        if (latestBehavior?.category) {
+            return latestBehavior.category;
+        }
+
+        const scoreDoc = await ProductScore.findOne({ productId })
+            .select('category')
+            .lean();
+
+        return scoreDoc?.category || null;
+    }
+
+    async getCoPurchaseCandidates(productId, limit = 40) {
+        const poolLimit = this.normalizeLimit(limit, 40, 200);
+
+        const rows = await UserBehavior.aggregate([
+            {
+                $match: {
+                    productId,
+                    eventType: 'purchase',
                 },
-                {
-                    $lookup: {
-                        from: 'userbehaviors',
-                        let: { buyerId: '$userId' },
-                        pipeline: [
-                            {
-                                $match: {
-                                    $expr: {
-                                        $and: [
-                                            { $eq: ['$userId', '$$buyerId'] },
-                                            { $eq: ['$eventType', 'purchase'] },
-                                            { $ne: ['$productId', productId] },
-                                        ],
-                                    },
+            },
+            {
+                $group: {
+                    _id: '$userId',
+                },
+            },
+            {
+                $lookup: {
+                    from: 'userbehaviors',
+                    let: { buyerId: '$_id' },
+                    pipeline: [
+                        {
+                            $match: {
+                                $expr: {
+                                    $and: [
+                                        { $eq: ['$userId', '$$buyerId'] },
+                                        { $eq: ['$eventType', 'purchase'] },
+                                        { $ne: ['$productId', productId] },
+                                    ],
                                 },
                             },
-                        ],
-                        as: 'otherPurchases',
-                    },
+                        },
+                    ],
+                    as: 'otherPurchases',
                 },
-                { $unwind: '$otherPurchases' },
+            },
+            { $unwind: '$otherPurchases' },
+            {
+                $group: {
+                    _id: '$otherPurchases.productId',
+                    buyerIds: { $addToSet: '$_id' },
+                    category: { $first: '$otherPurchases.category' },
+                },
+            },
+            {
+                $project: {
+                    category: 1,
+                    buyerCount: { $size: '$buyerIds' },
+                },
+            },
+            { $sort: { buyerCount: -1 } },
+            { $limit: poolLimit },
+        ]);
+
+        return rows.map((row) => ({
+            productId: row._id,
+            category: row.category || null,
+            buyerCount: Number(row.buyerCount) || 0,
+        }));
+    }
+
+    /**
+     * Hybrid similar products:
+     * embedding (55%) + category similarity (20%) + co-purchase (15%) + popularity (10%).
+     */
+    async getHybridSimilarProducts(productId, limit = 10) {
+        const normalizedLimit = this.normalizeLimit(limit, 10, 50);
+        const candidatePoolLimit = Math.max(normalizedLimit * 6, 30);
+
+        let semanticResult = {
+            results: [],
+            sourceCategory: null,
+            semanticUsed: false,
+            reason: 'not_attempted',
+        };
+
+        try {
+            semanticResult = await semanticSearchService.getSimilarProductsByProductId(
+                productId,
                 {
-                    $group: {
-                        _id: '$otherPurchases.productId',
-                        score: { $sum: 1 },
-                        category: { $first: '$otherPurchases.category' },
-                    },
-                },
-                { $sort: { score: -1 } },
-                { $limit: Math.ceil(limit / 2) },
-            ]);
-
-            const recommendations = coPurchased.map(r => ({
-                productId: r._id,
-                score: r.score * 2, // Higher weight for co-purchase
-                reason: 'Frequently bought together',
-                category: r.category,
-            }));
-
-            // Fill remaining with same-category products
-            if (recommendations.length < limit && category) {
-                const existingIds = recommendations.map(r => r.productId);
-                existingIds.push(productId);
-
-                const sameCategoryProducts = await ProductScore.find({
-                    category,
-                    productId: { $nin: existingIds },
-                })
-                    .sort({ trendingScore: -1 })
-                    .limit(limit - recommendations.length);
-
-                for (const p of sameCategoryProducts) {
-                    recommendations.push({
-                        productId: p.productId,
-                        score: p.trendingScore,
-                        reason: `Similar product in ${category}`,
-                        category: p.category,
-                    });
+                    limit: candidatePoolLimit,
+                    minScore: SIMILAR_PRODUCTS_MIN_EMBEDDING_SCORE,
+                    inStockOnly: false,
                 }
+            );
+        } catch (error) {
+            console.warn('Semantic similar-products lookup failed:', error.message);
+        }
+
+        const sourceCategory =
+            semanticResult.sourceCategory || await this.getMostRecentProductCategory(productId);
+
+        const semanticByProductId = new Map();
+        for (const semanticEntry of semanticResult.results || []) {
+            semanticByProductId.set(semanticEntry.productId, {
+                score: Number(semanticEntry.score) || 0,
+                category: semanticEntry.category || null,
+            });
+        }
+
+        const coPurchaseCandidates = await this.getCoPurchaseCandidates(
+            productId,
+            candidatePoolLimit
+        );
+        const maxCoPurchaseCount = coPurchaseCandidates.reduce((maxCount, candidate) => {
+            return Math.max(maxCount, Number(candidate.buyerCount) || 0);
+        }, 0);
+
+        const candidateByProductId = new Map();
+        const addCandidate = (candidateProductId, category = null) => {
+            if (!candidateProductId || candidateProductId === productId) {
+                return;
             }
 
-            return recommendations.slice(0, limit);
+            const existing = candidateByProductId.get(candidateProductId) || {
+                productId: candidateProductId,
+                category: null,
+                coPurchaseRaw: 0,
+            };
+
+            if (!existing.category && category) {
+                existing.category = category;
+            }
+
+            candidateByProductId.set(candidateProductId, existing);
+        };
+
+        for (const [candidateProductId, semanticEntry] of semanticByProductId.entries()) {
+            addCandidate(candidateProductId, semanticEntry.category);
+        }
+
+        for (const coPurchaseCandidate of coPurchaseCandidates) {
+            addCandidate(coPurchaseCandidate.productId, coPurchaseCandidate.category);
+            const existing = candidateByProductId.get(coPurchaseCandidate.productId);
+            existing.coPurchaseRaw = Number(coPurchaseCandidate.buyerCount) || 0;
+        }
+
+        let categoryTrendingCandidates = [];
+        if (sourceCategory) {
+            categoryTrendingCandidates = await ProductScore.find({
+                category: sourceCategory,
+                productId: { $ne: productId },
+            })
+                .sort({ trendingScore: -1 })
+                .limit(candidatePoolLimit)
+                .select('productId category trendingScore')
+                .lean();
+
+            categoryTrendingCandidates.forEach((candidate) => {
+                addCandidate(candidate.productId, candidate.category || sourceCategory);
+            });
+        }
+
+        if (candidateByProductId.size === 0) {
+            return [];
+        }
+
+        const productIds = Array.from(candidateByProductId.keys());
+        const productScores = await ProductScore.find({
+            productId: { $in: productIds },
+        })
+            .select('productId category trendingScore')
+            .lean();
+
+        const scoreByProductId = new Map();
+        let maxTrendingScore = 0;
+        productScores.forEach((scoreDoc) => {
+            scoreByProductId.set(scoreDoc.productId, scoreDoc);
+            maxTrendingScore = Math.max(maxTrendingScore, Number(scoreDoc.trendingScore) || 0);
+        });
+
+        const ranked = productIds.map((candidateProductId) => {
+            const candidate = candidateByProductId.get(candidateProductId);
+            const semanticSignal = semanticByProductId.get(candidateProductId);
+            const scoreDoc = scoreByProductId.get(candidateProductId);
+
+            const category =
+                scoreDoc?.category ||
+                candidate.category ||
+                semanticSignal?.category ||
+                null;
+
+            const embeddingScore = clamp(
+                Number(semanticSignal?.score) || 0,
+                0,
+                1
+            );
+            const categoryScore = computeCategorySimilarity(sourceCategory, category);
+            const coPurchaseScore = normalizeByMax(candidate.coPurchaseRaw, maxCoPurchaseCount);
+            const popularityScore = normalizeByMax(
+                Number(scoreDoc?.trendingScore) || 0,
+                maxTrendingScore
+            );
+
+            const finalScore =
+                (embeddingScore * SIMILAR_PRODUCTS_SIGNAL_WEIGHTS.embedding) +
+                (categoryScore * SIMILAR_PRODUCTS_SIGNAL_WEIGHTS.category) +
+                (coPurchaseScore * SIMILAR_PRODUCTS_SIGNAL_WEIGHTS.coPurchase) +
+                (popularityScore * SIMILAR_PRODUCTS_SIGNAL_WEIGHTS.popularity);
+
+            let reason = 'Similar product';
+            if (embeddingScore >= Math.max(categoryScore, coPurchaseScore, popularityScore)) {
+                reason = 'Similar by embedding';
+            } else if (categoryScore >= Math.max(coPurchaseScore, popularityScore)) {
+                reason = category ? `Similar in ${category}` : 'Similar category';
+            } else if (coPurchaseScore >= popularityScore) {
+                reason = 'Frequently bought together';
+            } else {
+                reason = 'Popular similar product';
+            }
+
+            return {
+                productId: candidateProductId,
+                score: Number(finalScore.toFixed(4)),
+                reason,
+                category,
+            };
+        });
+
+        return ranked
+            .filter((entry) => entry.score > 0)
+            .sort((a, b) => b.score - a.score)
+            .slice(0, normalizedLimit);
+    }
+
+    async getSimilarProductsLegacy(productId, limit = 10, fallbackCategory = null) {
+        const normalizedLimit = this.normalizeLimit(limit, 10, 50);
+        const category = fallbackCategory || await this.getMostRecentProductCategory(productId);
+
+        const coPurchased = await UserBehavior.aggregate([
+            {
+                $match: {
+                    productId,
+                    eventType: 'purchase',
+                },
+            },
+            {
+                $lookup: {
+                    from: 'userbehaviors',
+                    let: { buyerId: '$userId' },
+                    pipeline: [
+                        {
+                            $match: {
+                                $expr: {
+                                    $and: [
+                                        { $eq: ['$userId', '$$buyerId'] },
+                                        { $eq: ['$eventType', 'purchase'] },
+                                        { $ne: ['$productId', productId] },
+                                    ],
+                                },
+                            },
+                        },
+                    ],
+                    as: 'otherPurchases',
+                },
+            },
+            { $unwind: '$otherPurchases' },
+            {
+                $group: {
+                    _id: '$otherPurchases.productId',
+                    score: { $sum: 1 },
+                    category: { $first: '$otherPurchases.category' },
+                },
+            },
+            { $sort: { score: -1 } },
+            { $limit: Math.ceil(normalizedLimit / 2) },
+        ]);
+
+        const recommendations = coPurchased.map((row) => ({
+            productId: row._id,
+            score: row.score * 2,
+            reason: 'Frequently bought together',
+            category: row.category,
+        }));
+
+        if (recommendations.length < normalizedLimit && category) {
+            const existingIds = recommendations.map((row) => row.productId);
+            existingIds.push(productId);
+
+            const sameCategoryProducts = await ProductScore.find({
+                category,
+                productId: { $nin: existingIds },
+            })
+                .sort({ trendingScore: -1 })
+                .limit(normalizedLimit - recommendations.length);
+
+            for (const product of sameCategoryProducts) {
+                recommendations.push({
+                    productId: product.productId,
+                    score: product.trendingScore,
+                    reason: `Similar product in ${category}`,
+                    category: product.category,
+                });
+            }
+        }
+
+        return recommendations.slice(0, normalizedLimit);
+    }
+
+    /**
+     * Get similar products using hybrid ranking with semantic and category signals.
+     */
+    async getSimilarProducts(productId, limit = 10) {
+        const normalizedLimit = this.normalizeLimit(limit, 10, 50);
+
+        try {
+            const hybridRecommendations = await this.getHybridSimilarProducts(
+                productId,
+                normalizedLimit
+            );
+
+            if (hybridRecommendations.length > 0) {
+                return hybridRecommendations;
+            }
+
+            const categoryFallback = await this.getMostRecentProductCategory(productId);
+            return await this.getSimilarProductsLegacy(
+                productId,
+                normalizedLimit,
+                categoryFallback
+            );
         } catch (error) {
             console.error('Error getting similar products:', error);
-            return [];
+            try {
+                const categoryFallback = await this.getMostRecentProductCategory(productId);
+                return await this.getSimilarProductsLegacy(
+                    productId,
+                    normalizedLimit,
+                    categoryFallback
+                );
+            } catch (fallbackError) {
+                console.error('Error getting fallback similar products:', fallbackError);
+                return [];
+            }
         }
     }
 

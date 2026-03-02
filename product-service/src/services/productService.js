@@ -8,6 +8,7 @@ class ProductService {
   async getProducts({
     search,
     category,
+    categories,
     minPrice,
     maxPrice,
     inStockOnly,
@@ -17,6 +18,14 @@ class ProductService {
   }) {
     const normalizedSearch = typeof search === 'string' ? search.trim() : '';
     const normalizedCategory = typeof category === 'string' ? category.trim() : '';
+    const normalizedCategories = Array.isArray(categories)
+      ? [...new Set(
+          categories
+            .filter((value) => typeof value === 'string')
+            .map((value) => value.trim())
+            .filter(Boolean)
+        )]
+      : [];
     const normalizedLimit = Number.isFinite(limit) ? Math.min(Math.max(limit, 1), 50) : 20;
     const normalizedOffset = Number.isFinite(offset) ? Math.max(offset, 0) : 0;
     const resolvedSortBy = sortBy || (normalizedSearch ? 'RELEVANCE' : 'NEWEST');
@@ -29,6 +38,7 @@ class ProductService {
         const semanticProducts = await productSemanticSearchService.searchProducts({
           search: normalizedSearch,
           category: normalizedCategory || undefined,
+          categories: normalizedCategories.length > 0 ? normalizedCategories : undefined,
           minPrice,
           maxPrice,
           inStockOnly,
@@ -50,7 +60,9 @@ class ProductService {
       query.$text = { $search: normalizedSearch };
     }
 
-    if (normalizedCategory) {
+    if (normalizedCategories.length > 0) {
+      query.category = { $in: normalizedCategories };
+    } else if (normalizedCategory) {
       query.category = normalizedCategory;
     }
 
