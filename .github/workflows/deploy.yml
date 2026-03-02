@@ -19,7 +19,6 @@ on:
         default: "false"
         type: boolean
 
-# Only one deploy at a time
 concurrency:
   group: deploy-ec2
   cancel-in-progress: false
@@ -40,112 +39,12 @@ jobs:
           command_timeout: 30m
           script: |
             set -euo pipefail
-
-            APP_DIR="/opt/ecom/app"
-            COMPOSE_FILE="docker-compose.prod.yml"
-            BRANCH="${{ github.ref_name }}"
-            HEALTH_URL="http://localhost:4000/health"
-            OLLAMA_MODEL="${OLLAMA_EMBED_MODEL:-embeddinggemma}"
-
-            GH_JWT_SECRET='${{ secrets.JWT_SECRET }}'
-            GH_JWT_REFRESH_SECRET='${{ secrets.JWT_REFRESH_SECRET }}'
-            GH_INTERNAL_JWT_SECRET='${{ secrets.INTERNAL_JWT_SECRET }}'
-            GH_GEMINI_API_KEY='${{ secrets.GEMINI_API_KEY }}'
-
-            echo "═══════════════════════════════════════"
-            echo "  Deploying branch: $BRANCH"
-            echo "═══════════════════════════════════════"
-
-            # Pull latest code (reset --hard handles force pushes)
-            cd "$APP_DIR"
-            git fetch origin
-            git checkout "$BRANCH" 2>/dev/null || git checkout -b "$BRANCH" "origin/$BRANCH"
-            git reset --hard "origin/$BRANCH"
-            echo "✅ Code updated"
-
-            # Require GitHub Actions secrets and inject them directly for compose interpolation
-            if [ -z "$GH_JWT_SECRET" ] || [ -z "$GH_JWT_REFRESH_SECRET" ] || [ -z "$GH_INTERNAL_JWT_SECRET" ] || [ -z "$GH_GEMINI_API_KEY" ]; then
-              echo "❌ Missing one or more required GitHub secrets: JWT_SECRET, JWT_REFRESH_SECRET, INTERNAL_JWT_SECRET, GEMINI_API_KEY"
-              exit 1
-            fi
-
-            export JWT_SECRET="$GH_JWT_SECRET"
-            export JWT_REFRESH_SECRET="$GH_JWT_REFRESH_SECRET"
-            export INTERNAL_JWT_SECRET="$GH_INTERNAL_JWT_SECRET"
-            export GEMINI_API_KEY="$GH_GEMINI_API_KEY"
-            echo "✅ Runtime secrets loaded from GitHub Actions"
-
-            # Stop old containers, rebuild, and start
-            if [ "${{ inputs.skip_build }}" = "true" ]; then
-              echo "⏭️  Restarting (skip-build mode)..."
-              docker compose -f "$COMPOSE_FILE" down
-              docker compose -f "$COMPOSE_FILE" up -d
-            else
-              echo "🔨 Building and starting..."
-              docker compose -f "$COMPOSE_FILE" down
-              docker builder prune -af 2>/dev/null || true
-              docker compose -f "$COMPOSE_FILE" up -d --build
-            fi
-            echo "✅ Containers started"
-
-            # Health check with retries (up to 5 minutes)
-            echo "🩺 Waiting for health check..."
-            for i in $(seq 1 60); do
-              if curl -sf "$HEALTH_URL" > /dev/null 2>&1; then
-                echo "✅ Health check passed (attempt $i/60)"
-                break
-              fi
-              if [ "$i" -eq 60 ]; then
-                echo "❌ Health check failed after 60 attempts"
-                docker compose -f "$COMPOSE_FILE" logs --tail=50
-                exit 1
-              fi
-              sleep 5
-            done
-
-            # Optional: seed DB
-            if [ "${{ inputs.seed_db }}" = "true" ]; then
-              echo "🌱 Seeding product database..."
-              docker exec product-service node seed_products.js
-              PROD_COUNT=$(docker exec ecommerce-mongodb mongosh --quiet --eval \
-                'db.getSiblingDB("product_db").products.countDocuments()')
-              echo "✅ Seeded — $PROD_COUNT products"
-            fi
-
-            # Initialize semantic search infra when ollama service is present
-            if docker compose -f "$COMPOSE_FILE" config --services | grep -q '^ollama$'; then
-              echo "🧠 Waiting for Ollama..."
-              for i in $(seq 1 60); do
-                if docker exec ollama ollama list > /dev/null 2>&1; then
-                  echo "✅ Ollama ready (attempt $i/60)"
-                  break
-                fi
-                if [ "$i" -eq 60 ]; then
-                  echo "❌ Ollama did not become ready in time"
-                  docker compose -f "$COMPOSE_FILE" logs --tail=50 ollama
-                  exit 1
-                fi
-                sleep 5
-              done
-
-              if ! docker exec ollama ollama list | awk 'NR>1 {print $1}' | grep -qx "$OLLAMA_MODEL"; then
-                echo "⬇️ Pulling Ollama model: $OLLAMA_MODEL"
-                docker exec ollama ollama pull "$OLLAMA_MODEL"
-              else
-                echo "✅ Ollama model already available: $OLLAMA_MODEL"
-              fi
-
-              echo "♻️ Reindexing semantic catalog..."
-              docker exec product-service node /app/product-service/scripts/reindexSemanticSearch.js
-
-              echo "🔎 Semantic status:"
-              docker exec product-service node -e 'fetch("http://127.0.0.1:4002/api/products/semantic/status").then(async (r) => { if (!r.ok) throw new Error("HTTP " + r.status); console.log(await r.text()); }).catch((e) => { console.error(e.message); process.exit(1); });'
-              echo ""
-            fi
-
-            # Summary
-            echo ""
-            echo "═══════════════════════════════════════"
-            echo "  ✅ Deployment complete!"
-            echo "═══════════════════════════════════════"
-            docker compose -f "$COMPOSE_FILE" ps
+            cd /opt/ecom/app
+            git fetch origin && git reset --hard "origin/${{ github.ref_name }}"
+            export JWT_SECRET='${{ secrets.JWT_SECRET }}'
+            export JWT_REFRESH_SECRET='${{ secrets.JWT_REFRESH_SECRET }}'
+            export INTERNAL_JWT_SECRET='${{ secrets.INTERNAL_JWT_SECRET }}'
+            export GEMINI_API_KEY='${{ secrets.GEMINI_API_KEY }}'
+            export DEPLOY_BRANCH='${{ github.ref_name }}'
+            chmod +x scripts/deploy.sh
+            ./scripts/deploy.sh ${{ inputs.skip_build == true && '--skip-build' || '' }} ${{ inputs.seed_db == true && '--seed' || '' }}

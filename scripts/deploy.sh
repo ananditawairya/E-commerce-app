@@ -1,91 +1,110 @@
 #!/usr/bin/env bash
-# ─────────────────────────────────────────────────────────────
-# deploy.sh — Pull, build, deploy, and verify the E-Commerce stack
+#
+# deploy.sh — Orchestrate the E-Commerce stack deployment.
+#
+# This is the main entry point called by the GitHub Actions CD workflow
+# (via SSH) or manually on the EC2 instance.
 #
 # Usage:
-#   ./scripts/deploy.sh              # default: deploy all
-#   ./scripts/deploy.sh --skip-build # restart without rebuilding
-#   ./scripts/deploy.sh --seed       # also seed the product DB
-# ─────────────────────────────────────────────────────────────
+#   ./scripts/deploy.sh                          # full deploy
+#   ./scripts/deploy.sh --skip-build             # restart without rebuild
+#   ./scripts/deploy.sh --seed                   # seed product DB after deploy
+#   ./scripts/deploy.sh --skip-build --seed      # combine flags
+
 set -euo pipefail
 
-# ── Configuration ───────────────────────────────────────────
-APP_DIR="${APP_DIR:-/opt/ecom/app}"
-COMPOSE_FILE="docker-compose.prod.yml"
-BRANCH="${DEPLOY_BRANCH:-feature/Logger_And_Order_Tracking}"
-HEALTH_URL="http://localhost:4000/health"
-HEALTH_RETRIES=30
-HEALTH_INTERVAL=5
+# ── Resolve script directory & source libraries ─────────────────────────────
 
-# ── Colors ──────────────────────────────────────────────────
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-NC='\033[0m'
+readonly SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-log()  { echo -e "${CYAN}[deploy]${NC} $*"; }
-ok()   { echo -e "${GREEN}[  OK  ]${NC} $*"; }
-warn() { echo -e "${YELLOW}[ WARN ]${NC} $*"; }
-fail() { echo -e "${RED}[FAILED]${NC} $*"; exit 1; }
+source "${SCRIPT_DIR}/lib/common.sh"
+source "${SCRIPT_DIR}/lib/load_secrets.sh"
+source "${SCRIPT_DIR}/lib/deploy_containers.sh"
+source "${SCRIPT_DIR}/lib/health_check.sh"
+source "${SCRIPT_DIR}/lib/seed_db.sh"
+source "${SCRIPT_DIR}/lib/init_ai.sh"
 
-# ── Parse flags ─────────────────────────────────────────────
-SKIP_BUILD=false
-SEED=false
-for arg in "$@"; do
-  case "$arg" in
-    --skip-build) SKIP_BUILD=true ;;
-    --seed)       SEED=true ;;
-    *)            warn "Unknown flag: $arg" ;;
-  esac
-done
+# ── Constants ───────────────────────────────────────────────────────────────
 
-# ── Step 1: Pull latest code ───────────────────────────────
-log "Pulling latest from branch: $BRANCH"
-cd "$APP_DIR"
-git fetch origin
-git checkout "$BRANCH"
-git pull origin "$BRANCH"
-ok "Code updated"
+readonly APP_DIR="${APP_DIR:-/opt/ecom/app}"
+readonly BRANCH="${DEPLOY_BRANCH:-main}"
 
-# ── Step 2: Build & start ──────────────────────────────────
-if [ "$SKIP_BUILD" = true ]; then
-  log "Restarting containers (skip-build mode)..."
-  docker compose -f "$COMPOSE_FILE" up -d
-else
-  log "Building images and starting containers..."
-  docker compose -f "$COMPOSE_FILE" up -d --build
-fi
-ok "Containers started"
+# ── Functions ───────────────────────────────────────────────────────────────
 
-# ── Step 3: Health check ───────────────────────────────────
-log "Waiting for gateway health check..."
-for i in $(seq 1 $HEALTH_RETRIES); do
-  if curl -sf "$HEALTH_URL" > /dev/null 2>&1; then
-    ok "Health check passed (attempt $i/$HEALTH_RETRIES)"
-    break
+#######################################
+# Parse command-line flags.
+# Globals:
+#   SKIP_BUILD  (set)
+#   SEED        (set)
+# Arguments:
+#   All command-line arguments ("$@").
+#######################################
+parse_flags() {
+  SKIP_BUILD="false"
+  SEED="false"
+
+  for arg in "$@"; do
+    case "${arg}" in
+      --skip-build) SKIP_BUILD="true" ;;
+      --seed)       SEED="true" ;;
+      *)            log::warn "Unknown flag: ${arg}" ;;
+    esac
+  done
+}
+
+#######################################
+# Pull the latest code from the remote branch.
+# Globals:
+#   APP_DIR
+#   BRANCH
+# Arguments:
+#   None
+#######################################
+pull_code() {
+  log::info "Pulling latest from branch: ${BRANCH}"
+  cd "${APP_DIR}"
+  git fetch origin
+  git checkout "${BRANCH}" 2>/dev/null \
+    || git checkout -b "${BRANCH}" "origin/${BRANCH}"
+  git reset --hard "origin/${BRANCH}"
+  log::info "Code updated"
+}
+
+#######################################
+# Print a deployment summary with container status.
+# Globals:
+#   COMPOSE_FILE
+# Arguments:
+#   None
+#######################################
+print_summary() {
+  log::step "Deployment complete!"
+  docker compose -f "${COMPOSE_FILE}" ps
+}
+
+# ── Main ────────────────────────────────────────────────────────────────────
+
+#######################################
+# Main entry point — orchestrates the full deploy pipeline.
+# Arguments:
+#   All command-line arguments ("$@").
+#######################################
+main() {
+  parse_flags "$@"
+
+  log::step "Deploying branch: ${BRANCH}"
+
+  pull_code
+  load_secrets
+  deploy_containers "${SKIP_BUILD}"
+  health_check
+
+  if [[ "${SEED}" == "true" ]]; then
+    seed_db
   fi
-  if [ "$i" -eq "$HEALTH_RETRIES" ]; then
-    fail "Health check failed after $HEALTH_RETRIES attempts"
-  fi
-  echo -n "."
-  sleep "$HEALTH_INTERVAL"
-done
 
-# ── Step 4: Seed DB (optional) ─────────────────────────────
-if [ "$SEED" = true ]; then
-  log "Seeding product database..."
-  docker exec product-service node seed_products.js
-  PRODUCT_COUNT=$(docker exec ecommerce-mongodb mongosh --quiet --eval \
-    'db.getSiblingDB("product_db").products.countDocuments()')
-  ok "Product DB seeded — $PRODUCT_COUNT products found"
-fi
+  init_ai
+  print_summary
+}
 
-# ── Step 5: Summary ────────────────────────────────────────
-echo ""
-log "──────────────────────────────────────"
-log "  Deployment complete!"
-log "──────────────────────────────────────"
-docker compose -f "$COMPOSE_FILE" ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}"
-echo ""
-ok "All done. Public endpoint: http://$(hostname -I | awk '{print $1}'):4000/health"
+main "$@"
