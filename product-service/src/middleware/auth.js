@@ -38,27 +38,37 @@ const verifyToken = async (token, correlationId) => {
 };
 
 const authenticate = async (context) => {
-  // CHANGE: Allow internal service-to-service authentication
+  const authHeader = context.req.headers.authorization;
+
+  // Prefer end-user token when present. Internal gateway token only proves caller
+  // is the gateway; it must not override user identity.
+  if (authHeader) {
+    const token = authHeader.replace(/^Bearer\s+/i, '');
+    if (!token) {
+      throw new Error('Invalid authorization header');
+    }
+
+    const user = await verifyToken(token, context.correlationId);
+    return user;
+  }
+
+  // Allow trusted internal service calls that do not need seller/buyer identity.
   const internalToken = context.req.headers['x-internal-gateway-token'];
   if (internalToken) {
     try {
       jwt.verify(internalToken, process.env.INTERNAL_JWT_SECRET || 'internal-secret');
-      return { userId: 'system-seller', role: 'seller', email: 'system@ecom.internal' };
+      return {
+        userId: 'gateway-internal',
+        role: 'internal',
+        email: 'gateway@ecom.internal',
+        isInternal: true,
+      };
     } catch (error) {
       console.error('Internal token verification failed:', error.message);
     }
   }
 
-  const authHeader = context.req.headers.authorization;
-
-  if (!authHeader) {
-    throw new Error('No authorization header');
-  }
-
-  const token = authHeader.replace('Bearer ', '');
-  const user = await verifyToken(token, context.correlationId);
-
-  return user;
+  throw new Error('No authorization header');
 };
 
 const requireSeller = async (context) => {

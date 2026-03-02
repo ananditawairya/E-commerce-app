@@ -4,7 +4,11 @@ const Product = require('./src/models/Product');
 require('dotenv').config();
 
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/product_db';
-const SELLER_ID = 'demo-seller-123';
+const DEFAULT_SELLER_ID = 'demo-seller-123';
+const SELLER_IDS = (process.env.SEED_SELLER_IDS || process.env.SELLER_ID || DEFAULT_SELLER_ID)
+    .split(',')
+    .map((id) => id.trim())
+    .filter(Boolean);
 
 const products = [
     // Electronics
@@ -426,11 +430,11 @@ async function seed() {
         await Product.deleteMany({});
         console.log('Cleared existing products');
 
-        console.log(`Seeding ${products.length} products...`);
+        console.log(`Seeding ${products.length} products for seller IDs: ${SELLER_IDS.join(', ')}`);
 
-        const preparedProducts = products.map(p => {
+        const preparedProducts = products.map((p, index) => {
             const productId = uuidv4();
-            const sellerId = SELLER_ID;
+            const sellerId = SELLER_IDS[index % SELLER_IDS.length];
 
             const variants = p.variants.map(v => {
                 const variantId = uuidv4();

@@ -187,9 +187,7 @@ async createOrder(userId, { items, totalAmount, shippingAddress }, correlationId
       // CHANGE: Execute saga steps
       await this.executeSagaSteps(saga, `${correlationId}-${sellerId}`);
 
-      // CHANGE: Update order status to confirmed if saga succeeds
-      order.status = 'confirmed';
-      await order.save();
+      // Keep new orders pending so sellers can explicitly confirm from dashboard.
 
       await kafkaProducer.publishOrderCreated(
         {
