@@ -28,6 +28,7 @@ source "${SCRIPT_DIR}/lib/init_ai.sh"
 
 readonly APP_DIR="${APP_DIR:-/opt/ecom/app}"
 readonly BRANCH="${DEPLOY_BRANCH:-main}"
+readonly DEPLOY_COMMIT_SHA="${DEPLOY_COMMIT_SHA:-}"
 
 # ── Functions ───────────────────────────────────────────────────────────────
 
@@ -53,20 +54,41 @@ parse_flags() {
 }
 
 #######################################
-# Pull the latest code from the remote branch.
+# Safely sync code from Git:
+# - fail if local tree is dirty (avoid deleting manual changes)
+# - deploy exact commit when DEPLOY_COMMIT_SHA is set
+# - otherwise fast-forward branch only (no forced reset)
 # Globals:
 #   APP_DIR
 #   BRANCH
+#   DEPLOY_COMMIT_SHA
 # Arguments:
 #   None
 #######################################
 pull_code() {
-  log::info "Pulling latest from branch: ${BRANCH}"
+  log::info "Fetching latest Git refs..."
   cd "${APP_DIR}"
-  git fetch origin
-  git checkout "${BRANCH}" 2>/dev/null \
-    || git checkout -b "${BRANCH}" "origin/${BRANCH}"
-  git reset --hard "origin/${BRANCH}"
+
+  git fetch --prune origin
+
+  if [[ -n "$(git status --porcelain)" ]]; then
+    log::err "Working tree has uncommitted changes; refusing deploy to avoid data loss."
+  fi
+
+  if [[ -n "${DEPLOY_COMMIT_SHA}" ]]; then
+    if ! git rev-parse --verify --quiet "${DEPLOY_COMMIT_SHA}^{commit}" > /dev/null; then
+      log::err "Deploy commit not found: ${DEPLOY_COMMIT_SHA}"
+    fi
+
+    log::info "Checking out deploy commit: ${DEPLOY_COMMIT_SHA}"
+    git checkout --detach "${DEPLOY_COMMIT_SHA}"
+  else
+    log::info "Fast-forwarding branch: ${BRANCH}"
+    git checkout "${BRANCH}" 2>/dev/null \
+      || git checkout -b "${BRANCH}" "origin/${BRANCH}"
+    git merge --ff-only "origin/${BRANCH}"
+  fi
+
   log::info "Code updated"
 }
 
@@ -93,6 +115,9 @@ main() {
   parse_flags "$@"
 
   log::step "Deploying branch: ${BRANCH}"
+  if [[ -n "${DEPLOY_COMMIT_SHA}" ]]; then
+    log::info "Pinned deploy commit: ${DEPLOY_COMMIT_SHA}"
+  fi
 
   pull_code
   load_secrets

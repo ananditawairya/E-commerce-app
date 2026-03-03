@@ -5,26 +5,47 @@
  * @return {boolean} True when operation is public.
  */
 function isPublicOperation(operationName, query) {
-  const publicOperations = [
+  const publicOperationNames = new Set([
     'Login',
     'Register',
     'IntrospectionQuery',
     'SendChatMessage',
-    'sendChatMessage',
     'GetProducts',
-    'products',
+    'GetProduct',
+    'GetCategories',
+    'GetSearchSuggestions',
+    'GetTrendingProducts',
+    'GetSimilarProducts',
+  ]);
+
+  if (typeof operationName === 'string' && publicOperationNames.has(operationName)) {
+    return true;
+  }
+
+  const publicQueryMarkers = [
+    'query GetProducts',
+    'query GetProduct',
+    'query GetCategories',
+    'query GetSearchSuggestions',
+    'query GetTrendingProducts',
+    'query GetSimilarProducts',
+    'products(',
+    'product(',
+    'searchSuggestions(',
+    'getTrendingProducts(',
+    'getSimilarProducts(',
+  ];
+
+  const publicMutationMarkers = [
+    'mutation Login',
+    'mutation Register',
+    'mutation SendChatMessage',
+    'sendChatMessage(',
   ];
 
   return (
-    publicOperations.includes(operationName) ||
-    query.includes('mutation Login') ||
-    query.includes('mutation Register') ||
-    query.includes('mutation SendChatMessage') ||
-    query.includes('mutation sendChatMessage') ||
-    query.includes('sendChatMessage(') ||
-    query.includes('query GetProducts') ||
-    query.includes('query products') ||
-    query.includes('products(') ||
+    publicQueryMarkers.some((marker) => query.includes(marker)) ||
+    publicMutationMarkers.some((marker) => query.includes(marker)) ||
     query.includes('__schema')
   );
 }
