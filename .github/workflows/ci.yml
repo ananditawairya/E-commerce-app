@@ -1,43 +1,83 @@
 # ─────────────────────────────────────────────────────────────
-# CI/CD — Build on push/PR, deploy on main after build succeeds
+# CI/CD — Build & push images on PR, deploy on merge to main
 # ─────────────────────────────────────────────────────────────
-name: CI — Build
+name: CI/CD Pipeline
 
 on:
   push:
-    branches: [main, "feature/**"]
+    branches: [main]
   pull_request:
     branches: [main]
 
+env:
+  REGISTRY: ghcr.io
+  IMAGE_PREFIX: ghcr.io/ananditawairya/ecom
+
 jobs:
+  # ── Build & Push ────────────────────────────────────────────
   build:
-    name: Build Docker Images
+    name: Build & Push Docker Images
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Build auth-service
-        run: docker build -f auth-service/Dockerfile -t ecom/auth-service:ci .
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build product-service
-        run: docker build -f product-service/Dockerfile -t ecom/product-service:ci .
+      - name: Set image tag
+        id: tag
+        run: echo "sha=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
-      - name: Build order-service
-        run: docker build -f order-service/Dockerfile -t ecom/order-service:ci .
+      - name: Build & push auth-service
+        run: |
+          docker build -f auth-service/Dockerfile -t ${{ env.IMAGE_PREFIX }}-auth-service:${{ steps.tag.outputs.sha }} .
+          docker push ${{ env.IMAGE_PREFIX }}-auth-service:${{ steps.tag.outputs.sha }}
 
-      - name: Build ai-service
-        run: docker build -f ai-service/Dockerfile -t ecom/ai-service:ci .
+      - name: Build & push product-service
+        run: |
+          docker build -f product-service/Dockerfile -t ${{ env.IMAGE_PREFIX }}-product-service:${{ steps.tag.outputs.sha }} .
+          docker push ${{ env.IMAGE_PREFIX }}-product-service:${{ steps.tag.outputs.sha }}
 
-      - name: Build graphql-gateway
-        run: docker build -f graphql-gateway/Dockerfile -t ecom/graphql-gateway:ci .
+      - name: Build & push order-service
+        run: |
+          docker build -f order-service/Dockerfile -t ${{ env.IMAGE_PREFIX }}-order-service:${{ steps.tag.outputs.sha }} .
+          docker push ${{ env.IMAGE_PREFIX }}-order-service:${{ steps.tag.outputs.sha }}
+
+      - name: Build & push ai-service
+        run: |
+          docker build -f ai-service/Dockerfile -t ${{ env.IMAGE_PREFIX }}-ai-service:${{ steps.tag.outputs.sha }} .
+          docker push ${{ env.IMAGE_PREFIX }}-ai-service:${{ steps.tag.outputs.sha }}
+
+      - name: Build & push graphql-gateway
+        run: |
+          docker build -f graphql-gateway/Dockerfile -t ${{ env.IMAGE_PREFIX }}-graphql-gateway:${{ steps.tag.outputs.sha }} .
+          docker push ${{ env.IMAGE_PREFIX }}-graphql-gateway:${{ steps.tag.outputs.sha }}
+
+      # On main: also tag as :latest so EC2 can always pull the newest
+      - name: Tag as latest
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          services=(auth-service product-service order-service ai-service graphql-gateway)
+          for svc in "${services[@]}"; do
+            docker tag "${{ env.IMAGE_PREFIX }}-${svc}:${{ steps.tag.outputs.sha }}" "${{ env.IMAGE_PREFIX }}-${svc}:latest"
+            docker push "${{ env.IMAGE_PREFIX }}-${svc}:latest"
+          done
 
       - name: Verify images
         run: |
-          echo "✅ All images built successfully"
-          docker images --filter "reference=ecom/*" --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}"
+          echo "✅ All images built and pushed successfully"
+          docker images --filter "reference=${{ env.IMAGE_PREFIX }}-*" --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}"
 
+  # ── Deploy ──────────────────────────────────────────────────
   deploy:
     name: Deploy to EC2
     runs-on: ubuntu-latest
@@ -59,6 +99,10 @@ jobs:
           script: |
             set -euo pipefail
             cd /opt/ecom/app
+
+            # Authenticate with GHCR so docker compose pull works
+            echo '${{ secrets.GHCR_TOKEN }}' | docker login ghcr.io -u ananditawairya --password-stdin
+
             export JWT_SECRET='${{ secrets.JWT_SECRET }}'
             export JWT_REFRESH_SECRET='${{ secrets.JWT_REFRESH_SECRET }}'
             export INTERNAL_JWT_SECRET='${{ secrets.INTERNAL_JWT_SECRET }}'
@@ -70,4 +114,4 @@ jobs:
             export DEPLOY_BRANCH='${{ github.ref_name }}'
             export DEPLOY_COMMIT_SHA='${{ github.sha }}'
             chmod +x scripts/deploy.sh
-            ./scripts/deploy.sh
+            ./scripts/deploy.sh --skip-build
