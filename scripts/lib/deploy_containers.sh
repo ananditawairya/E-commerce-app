@@ -25,7 +25,10 @@ deploy_containers() {
   docker compose -f "${COMPOSE_FILE}" down
 
   if [[ "${skip_build}" == "true" ]]; then
-    log::info "Restarting containers (skip-build mode)..."
+    log::info "Pulling pre-built images from registry..."
+    docker compose -f "${COMPOSE_FILE}" pull --ignore-buildable 2>/dev/null \
+      || docker compose -f "${COMPOSE_FILE}" pull || true
+    log::info "Starting containers (skip-build mode)..."
     docker compose -f "${COMPOSE_FILE}" up -d
   else
     log::info "Building images and starting containers..."

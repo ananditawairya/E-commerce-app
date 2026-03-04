@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       skip_build:
-        description: "Skip Docker build (restart only)"
+        description: "Skip Docker build (pull pre-built images from GHCR)"
         required: false
-        default: "false"
+        default: "true"
         type: boolean
       seed_db:
         description: "Seed product database after deploy"
@@ -39,6 +39,10 @@ jobs:
           script: |
             set -euo pipefail
             cd /opt/ecom/app
+
+            # Authenticate with GHCR so docker compose pull works
+            echo '${{ secrets.GHCR_TOKEN }}' | docker login ghcr.io -u ananditawairya --password-stdin
+
             export JWT_SECRET='${{ secrets.JWT_SECRET }}'
             export JWT_REFRESH_SECRET='${{ secrets.JWT_REFRESH_SECRET }}'
             export INTERNAL_JWT_SECRET='${{ secrets.INTERNAL_JWT_SECRET }}'
