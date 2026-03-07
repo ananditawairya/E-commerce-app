@@ -3,23 +3,58 @@
 
 const express = require('express');
 const productController = require('../controllers/productController');
+const {
+  requireSellerRestUser,
+  requireInternalService,
+} = require('../../middleware/auth');
 
-const router = express.Router();
+const publicProductRouter = express.Router();
+const sellerProductRouter = express.Router();
+const internalProductRouter = express.Router();
 
-// RESTful endpoints for product operations
-router.get('/', productController.getProducts);
-router.get('/categories', productController.getCategories);
-router.get('/search/suggestions', productController.getSearchSuggestions);
-router.get('/semantic/status', productController.getSemanticSearchStatus);
-router.post('/semantic/reindex', productController.reindexSemanticSearch);
-router.get('/:id', productController.getProduct);
-router.get('/seller/:sellerId', productController.getSellerProducts);
-router.post('/', productController.createProduct);
-router.put('/:id', productController.updateProduct);
-router.delete('/:id', productController.deleteProduct);
-router.post('/:id/deduct-stock', productController.deductStock);
-router.get('/:id/stock', productController.getStock);
-// Add restore stock endpoint for order cancellations
-router.post('/:id/restore-stock', productController.restoreStock);
+const enforceSellerOwnership = (req, res, next) => {
+  if (req.params.sellerId !== req.user.userId) {
+    return res.status(403).json({ error: 'Seller can only access own products' });
+  }
 
-module.exports = router;
+  return next();
+};
+
+const attachSellerIdFromToken = (req, res, next) => {
+  req.body = {
+    ...req.body,
+    sellerId: req.user.userId,
+  };
+  return next();
+};
+
+// Public catalog browsing routes
+publicProductRouter.get('/', productController.getProducts);
+publicProductRouter.get('/categories', productController.getCategories);
+publicProductRouter.get('/search/suggestions', productController.getSearchSuggestions);
+publicProductRouter.get('/semantic/status', productController.getSemanticSearchStatus);
+publicProductRouter.get('/:id', productController.getProduct);
+
+// Seller/admin routes
+sellerProductRouter.use(requireSellerRestUser);
+sellerProductRouter.get(
+  '/seller/:sellerId',
+  enforceSellerOwnership,
+  productController.getSellerProducts
+);
+sellerProductRouter.post('/semantic/reindex', productController.reindexSemanticSearch);
+sellerProductRouter.post('/', attachSellerIdFromToken, productController.createProduct);
+sellerProductRouter.put('/:id', attachSellerIdFromToken, productController.updateProduct);
+sellerProductRouter.delete('/:id', attachSellerIdFromToken, productController.deleteProduct);
+
+// Internal service routes
+internalProductRouter.use(requireInternalService);
+internalProductRouter.post('/:id/deduct-stock', productController.deductStock);
+internalProductRouter.get('/:id/stock', productController.getStock);
+internalProductRouter.post('/:id/restore-stock', productController.restoreStock);
+
+module.exports = {
+  publicProductRouter,
+  sellerProductRouter,
+  internalProductRouter,
+};

@@ -31,7 +31,7 @@ const app = express();
 let httpServer = null;
 
 const serviceUrls = getServiceUrls();
-const internalJwtSecret = process.env.INTERNAL_JWT_SECRET || 'internal-secret';
+const internalJwtSecret = process.env.INTERNAL_JWT_SECRET;
 
 const { middleware: metricsMiddleware, endpoint: metricsEndpoint } = createMetrics(
   promClient,
@@ -82,27 +82,35 @@ registerHealthRoute({ app, runtimeStore, circuitBreakers });
 async function buildGatewaySchema() {
   const authExecutor = createExecutor({
     url: `${serviceUrls.auth}/graphql`,
+    serviceName: 'auth',
     fetch,
     jwt,
     internalJwtSecret,
+    CircuitBreaker,
   });
   const productExecutor = createExecutor({
     url: `${serviceUrls.product}/graphql`,
+    serviceName: 'product',
     fetch,
     jwt,
     internalJwtSecret,
+    CircuitBreaker,
   });
   const orderExecutor = createExecutor({
     url: `${serviceUrls.order}/graphql`,
+    serviceName: 'order',
     fetch,
     jwt,
     internalJwtSecret,
+    CircuitBreaker,
   });
   const aiExecutor = createExecutor({
     url: `${serviceUrls.ai}/graphql`,
+    serviceName: 'ai',
     fetch,
     jwt,
     internalJwtSecret,
+    CircuitBreaker,
   });
 
   console.log('📡 Introspecting schemas from services...');
@@ -217,6 +225,12 @@ function logStartupSummary(port) {
  */
 async function startServer() {
   console.log('🚀 Starting Enhanced GraphQL Gateway...\n');
+
+  if (typeof internalJwtSecret !== 'string' || !internalJwtSecret.trim()) {
+    throw new Error(
+      'INTERNAL_JWT_SECRET is required for internal GraphQL authentication'
+    );
+  }
 
   await runtimeStore.connect();
   ({ authLimiter, graphqlLimiter, generalLimiter } = buildLimiterSet(

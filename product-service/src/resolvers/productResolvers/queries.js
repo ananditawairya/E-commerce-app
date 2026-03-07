@@ -14,6 +14,18 @@ function createQueryResolvers({
   API_BASE_URL,
   getErrorMessage,
 }) {
+  const createRequestHeaders = (context, { includeAuth = false } = {}) => {
+    const headers = {
+      'X-Correlation-ID': context.correlationId,
+    };
+
+    if (includeAuth && context.req?.headers?.authorization) {
+      headers.Authorization = context.req.headers.authorization;
+    }
+
+    return headers;
+  };
+
   return {
     async products(
       _,
@@ -65,9 +77,7 @@ function createQueryResolvers({
 
         const response = await axios.get(API_BASE_URL, {
           params,
-          headers: {
-            'X-Correlation-ID': context.correlationId,
-          },
+          headers: createRequestHeaders(context),
         });
         return response.data;
       } catch (error) {
@@ -78,9 +88,7 @@ function createQueryResolvers({
     async product(_, { id }, context) {
       try {
         const response = await axios.get(`${API_BASE_URL}/${id}`, {
-          headers: {
-            'X-Correlation-ID': context.correlationId,
-          },
+          headers: createRequestHeaders(context),
         });
         return response.data;
       } catch (error) {
@@ -92,9 +100,7 @@ function createQueryResolvers({
       try {
         const user = await requireSeller(context);
         const response = await axios.get(`${API_BASE_URL}/seller/${user.userId}`, {
-          headers: {
-            'X-Correlation-ID': context.correlationId,
-          },
+          headers: createRequestHeaders(context, { includeAuth: true }),
         });
         return response.data;
       } catch (error) {
@@ -105,9 +111,7 @@ function createQueryResolvers({
     async categories(_, __, context) {
       try {
         const response = await axios.get(`${API_BASE_URL}/categories`, {
-          headers: {
-            'X-Correlation-ID': context.correlationId,
-          },
+          headers: createRequestHeaders(context),
         });
         return response.data;
       } catch (error) {
@@ -123,9 +127,7 @@ function createQueryResolvers({
             categories,
             limit,
           },
-          headers: {
-            'X-Correlation-ID': context.correlationId,
-          },
+          headers: createRequestHeaders(context),
         });
         return response.data;
       } catch (error) {

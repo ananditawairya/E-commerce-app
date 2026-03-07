@@ -1,8 +1,10 @@
 const axios = require('axios');
+const jwt = require('jsonwebtoken');
 const {
   CART_API_URL,
   ORDERS_API_URL,
   PRODUCT_API_URL,
+  INTERNAL_PRODUCT_API_URL,
 } = require('./constants');
 
 /**
@@ -17,11 +19,34 @@ function getApiErrorMessage(error) {
 /**
  * Creates base request headers with correlation id.
  * @param {string} correlationId Correlation id.
+ * @param {string=} authHeader Authorization header.
  * @return {object} Request headers.
  */
-function createHeaders(correlationId) {
-  return {
+function createHeaders(correlationId, authHeader) {
+  const headers = {
     'X-Correlation-ID': correlationId,
+  };
+
+  if (typeof authHeader === 'string' && authHeader.trim()) {
+    headers.Authorization = authHeader;
+  }
+
+  return headers;
+}
+
+/**
+ * Creates internal-service headers with gateway token.
+ * @param {string} correlationId Correlation id.
+ * @return {object} Request headers.
+ */
+function createInternalHeaders(correlationId) {
+  return {
+    ...createHeaders(correlationId),
+    'x-internal-gateway-token': jwt.sign(
+      { service: 'order-service', timestamp: Date.now() },
+      process.env.INTERNAL_JWT_SECRET || 'internal-secret',
+      { expiresIn: '2m' }
+    ),
   };
 }
 
@@ -35,10 +60,10 @@ function createHeaders(correlationId) {
 async function getProductStock(productId, variantId, correlationId) {
   try {
     const response = await axios.get(
-      `${PRODUCT_API_URL}/${productId}/stock`,
+      `${INTERNAL_PRODUCT_API_URL}/${productId}/stock`,
       {
         params: { variantId },
-        headers: createHeaders(correlationId),
+        headers: createInternalHeaders(correlationId),
         timeout: 5000,
       }
     );
@@ -73,13 +98,14 @@ async function getProductDetails(productId, correlationId) {
  * Fetches buyer cart.
  * @param {string} userId Buyer user id.
  * @param {string} correlationId Correlation id.
+ * @param {string=} authHeader Authorization header.
  * @return {Promise<object>} Cart payload.
  */
-async function getCart(userId, correlationId) {
+async function getCart(userId, correlationId, authHeader) {
   const response = await axios.get(
     `${CART_API_URL}/${userId}`,
     {
-      headers: createHeaders(correlationId),
+      headers: createHeaders(correlationId, authHeader),
     }
   );
   return response.data;
@@ -90,14 +116,15 @@ async function getCart(userId, correlationId) {
  * @param {string} userId Buyer user id.
  * @param {object} payload Item payload.
  * @param {string} correlationId Correlation id.
+ * @param {string=} authHeader Authorization header.
  * @return {Promise<object>} Cart payload.
  */
-async function addToCart(userId, payload, correlationId) {
+async function addToCart(userId, payload, correlationId, authHeader) {
   const response = await axios.post(
     `${CART_API_URL}/${userId}/items`,
     payload,
     {
-      headers: createHeaders(correlationId),
+      headers: createHeaders(correlationId, authHeader),
     }
   );
   return response.data;
@@ -108,14 +135,15 @@ async function addToCart(userId, payload, correlationId) {
  * @param {string} userId Buyer user id.
  * @param {object} payload Update payload.
  * @param {string} correlationId Correlation id.
+ * @param {string=} authHeader Authorization header.
  * @return {Promise<object>} Cart payload.
  */
-async function updateCartItem(userId, payload, correlationId) {
+async function updateCartItem(userId, payload, correlationId, authHeader) {
   const response = await axios.put(
     `${CART_API_URL}/${userId}/items`,
     payload,
     {
-      headers: createHeaders(correlationId),
+      headers: createHeaders(correlationId, authHeader),
     }
   );
   return response.data;
@@ -126,14 +154,15 @@ async function updateCartItem(userId, payload, correlationId) {
  * @param {string} userId Buyer user id.
  * @param {object} payload Remove payload.
  * @param {string} correlationId Correlation id.
+ * @param {string=} authHeader Authorization header.
  * @return {Promise<object>} Cart payload.
  */
-async function removeFromCart(userId, payload, correlationId) {
+async function removeFromCart(userId, payload, correlationId, authHeader) {
   const response = await axios.delete(
     `${CART_API_URL}/${userId}/items`,
     {
       data: payload,
-      headers: createHeaders(correlationId),
+      headers: createHeaders(correlationId, authHeader),
     }
   );
   return response.data;
@@ -143,13 +172,14 @@ async function removeFromCart(userId, payload, correlationId) {
  * Clears cart for one buyer.
  * @param {string} userId Buyer user id.
  * @param {string} correlationId Correlation id.
+ * @param {string=} authHeader Authorization header.
  * @return {Promise<void>} No return value.
  */
-async function clearCart(userId, correlationId) {
+async function clearCart(userId, correlationId, authHeader) {
   await axios.delete(
     `${CART_API_URL}/${userId}`,
     {
-      headers: createHeaders(correlationId),
+      headers: createHeaders(correlationId, authHeader),
     }
   );
 }
@@ -158,13 +188,14 @@ async function clearCart(userId, correlationId) {
  * Fetches buyer orders.
  * @param {string} userId Buyer user id.
  * @param {string} correlationId Correlation id.
+ * @param {string=} authHeader Authorization header.
  * @return {Promise<object[]>} Orders payload.
  */
-async function getBuyerOrders(userId, correlationId) {
+async function getBuyerOrders(userId, correlationId, authHeader) {
   const response = await axios.get(
     `${ORDERS_API_URL}/buyer/${userId}`,
     {
-      headers: createHeaders(correlationId),
+      headers: createHeaders(correlationId, authHeader),
     }
   );
   return response.data;
@@ -174,13 +205,14 @@ async function getBuyerOrders(userId, correlationId) {
  * Fetches seller orders.
  * @param {string} userId Seller user id.
  * @param {string} correlationId Correlation id.
+ * @param {string=} authHeader Authorization header.
  * @return {Promise<object[]>} Orders payload.
  */
-async function getSellerOrders(userId, correlationId) {
+async function getSellerOrders(userId, correlationId, authHeader) {
   const response = await axios.get(
     `${ORDERS_API_URL}/seller/${userId}`,
     {
-      headers: createHeaders(correlationId),
+      headers: createHeaders(correlationId, authHeader),
     }
   );
   return response.data;
@@ -191,14 +223,15 @@ async function getSellerOrders(userId, correlationId) {
  * @param {string} userId Seller user id.
  * @param {number} days Day range.
  * @param {string} correlationId Correlation id.
+ * @param {string=} authHeader Authorization header.
  * @return {Promise<object>} Analytics payload.
  */
-async function getSellerAnalytics(userId, days, correlationId) {
+async function getSellerAnalytics(userId, days, correlationId, authHeader) {
   const response = await axios.get(
     `${ORDERS_API_URL}/seller/${userId}/analytics`,
     {
       params: { days },
-      headers: createHeaders(correlationId),
+      headers: createHeaders(correlationId, authHeader),
     }
   );
   return response.data;
@@ -208,13 +241,14 @@ async function getSellerAnalytics(userId, days, correlationId) {
  * Fetches one order by id.
  * @param {string} orderId Order id.
  * @param {string} correlationId Correlation id.
+ * @param {string=} authHeader Authorization header.
  * @return {Promise<object>} Order payload.
  */
-async function getOrderById(orderId, correlationId) {
+async function getOrderById(orderId, correlationId, authHeader) {
   const response = await axios.get(
     `${ORDERS_API_URL}/${orderId}`,
     {
-      headers: createHeaders(correlationId),
+      headers: createHeaders(correlationId, authHeader),
     }
   );
   return response.data;
@@ -225,14 +259,15 @@ async function getOrderById(orderId, correlationId) {
  * @param {string} userId Buyer user id.
  * @param {object} payload Order payload.
  * @param {string} correlationId Correlation id.
+ * @param {string=} authHeader Authorization header.
  * @return {Promise<object[]>} Created orders.
  */
-async function createOrders(userId, payload, correlationId) {
+async function createOrders(userId, payload, correlationId, authHeader) {
   const response = await axios.post(
     `${ORDERS_API_URL}/${userId}`,
     payload,
     {
-      headers: createHeaders(correlationId),
+      headers: createHeaders(correlationId, authHeader),
     }
   );
   return response.data;
@@ -244,14 +279,15 @@ async function createOrders(userId, payload, correlationId) {
  * @param {string} sellerId Seller user id.
  * @param {string} status Next status.
  * @param {string} correlationId Correlation id.
+ * @param {string=} authHeader Authorization header.
  * @return {Promise<object>} Updated order.
  */
-async function updateOrderStatus(orderId, sellerId, status, correlationId) {
+async function updateOrderStatus(orderId, sellerId, status, correlationId, authHeader) {
   const response = await axios.put(
     `${ORDERS_API_URL}/${orderId}/status`,
     { sellerId, status },
     {
-      headers: createHeaders(correlationId),
+      headers: createHeaders(correlationId, authHeader),
     }
   );
   return response.data;
@@ -262,14 +298,15 @@ async function updateOrderStatus(orderId, sellerId, status, correlationId) {
  * @param {string} orderId Order id.
  * @param {string} sellerId Seller user id.
  * @param {string} correlationId Correlation id.
+ * @param {string=} authHeader Authorization header.
  * @return {Promise<object>} Cancelled order.
  */
-async function cancelOrder(orderId, sellerId, correlationId) {
+async function cancelOrder(orderId, sellerId, correlationId, authHeader) {
   const response = await axios.put(
     `${ORDERS_API_URL}/${orderId}/cancel`,
     { sellerId },
     {
-      headers: createHeaders(correlationId),
+      headers: createHeaders(correlationId, authHeader),
     }
   );
   return response.data;

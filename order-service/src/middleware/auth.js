@@ -2,9 +2,24 @@
 // Ensure REST API communication only
 
 const axios = require('axios');
+const jwt = require('jsonwebtoken');
 
 // Use REST API URL exclusively
 const AUTH_API_URL = process.env.AUTH_API_URL || 'http://localhost:4001/api/users';
+const INTERNAL_JWT_SECRET = process.env.INTERNAL_JWT_SECRET || 'internal-secret';
+
+const extractBearerToken = (authHeader) => {
+  if (typeof authHeader !== 'string') {
+    return null;
+  }
+
+  const match = authHeader.match(/^Bearer\s+(.+)$/i);
+  if (!match || !match[1]) {
+    return null;
+  }
+
+  return match[1].trim();
+};
 
 const verifyToken = async (token, correlationId) => {
   try {
@@ -36,6 +51,9 @@ const verifyToken = async (token, correlationId) => {
 
     return response.data;
   } catch (error) {
+    if (error.message === 'Invalid token') {
+      throw new Error('Invalid or expired token');
+    }
     console.error('❌ Token verification error:', {
       message: error.message,
       code: error.code,
@@ -52,6 +70,17 @@ const verifyToken = async (token, correlationId) => {
   }
 };
 
+const verifyInternalGatewayToken = (internalToken) =>
+  jwt.verify(internalToken, INTERNAL_JWT_SECRET);
+
+const verifyUserAccessToken = async (token, correlationId) => {
+  const user = await verifyToken(token, correlationId);
+  if (!user || !user.valid) {
+    throw new Error('Invalid or expired token');
+  }
+  return user;
+};
+
 const authenticate = async (context) => {
   const authHeader = context.req.headers.authorization;
   
@@ -60,14 +89,14 @@ const authenticate = async (context) => {
     throw new Error('No authorization header');
   }
 
-  const token = authHeader.replace('Bearer ', '');
+  const token = extractBearerToken(authHeader);
 
-    // Add token format validation
+  // Add token format validation
   if (!token || token.length < 20) {
     console.error('❌ Invalid token format:', { tokenLength: token?.length });
     throw new Error('Invalid token format');
   }
-  const user = await verifyToken(token, context.correlationId);
+  const user = await verifyUserAccessToken(token, context.correlationId);
   
   return user;
 };
@@ -94,8 +123,92 @@ const requireSeller = async (context) => {
   return user;
 };
 
+const authenticateRestUser = async (req, res, next) => {
+  const token = extractBearerToken(req.headers.authorization);
+  if (!token) {
+    return res.status(401).json({ error: 'Access token required' });
+  }
+
+  try {
+    const user = await verifyUserAccessToken(token, req.correlationId);
+    req.user = user;
+    return next();
+  } catch (error) {
+    if (error.message === 'Auth service unavailable') {
+      return res.status(503).json({ error: 'Authentication service unavailable' });
+    }
+
+    return res.status(401).json({ error: 'Invalid or expired token' });
+  }
+};
+
+const requireBuyerRestUser = async (req, res, next) => {
+  const token = extractBearerToken(req.headers.authorization);
+  if (!token) {
+    return res.status(401).json({ error: 'Access token required' });
+  }
+
+  try {
+    const user = await verifyUserAccessToken(token, req.correlationId);
+    if (user.role !== 'buyer') {
+      return res.status(403).json({ error: 'Buyer access required' });
+    }
+
+    req.user = user;
+    return next();
+  } catch (error) {
+    if (error.message === 'Auth service unavailable') {
+      return res.status(503).json({ error: 'Authentication service unavailable' });
+    }
+
+    return res.status(401).json({ error: 'Invalid or expired token' });
+  }
+};
+
+const requireSellerRestUser = async (req, res, next) => {
+  const token = extractBearerToken(req.headers.authorization);
+  if (!token) {
+    return res.status(401).json({ error: 'Access token required' });
+  }
+
+  try {
+    const user = await verifyUserAccessToken(token, req.correlationId);
+    if (user.role !== 'seller') {
+      return res.status(403).json({ error: 'Seller access required' });
+    }
+
+    req.user = user;
+    return next();
+  } catch (error) {
+    if (error.message === 'Auth service unavailable') {
+      return res.status(503).json({ error: 'Authentication service unavailable' });
+    }
+
+    return res.status(401).json({ error: 'Invalid or expired token' });
+  }
+};
+
+const requireInternalService = (req, res, next) => {
+  const internalToken = req.headers['x-internal-gateway-token'];
+  if (!internalToken) {
+    return res.status(401).json({ error: 'Internal gateway token required' });
+  }
+
+  try {
+    const decoded = verifyInternalGatewayToken(internalToken);
+    req.internalCaller = decoded;
+    return next();
+  } catch (error) {
+    return res.status(403).json({ error: 'Invalid internal gateway token' });
+  }
+};
+
 module.exports = {
   authenticate,
+  authenticateRestUser,
   requireBuyer,
+  requireBuyerRestUser,
+  requireInternalService,
   requireSeller,
+  requireSellerRestUser,
 };

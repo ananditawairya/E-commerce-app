@@ -10,12 +10,18 @@ const jwt = require('jsonwebtoken');
 
 const typeDefs = require('./schema/orderSchema');
 const resolvers = require('./resolvers/orderResolvers');
-const orderRoutes = require('./api/routes/orderRoutes');
+const {
+  buyerOrderRouter,
+  sellerOrderRouter,
+  authenticatedOrderRouter,
+  internalOrderRouter,
+} = require('./api/routes/orderRoutes');
 const logger = require('./api/middleware/logger');
 const errorHandler = require('./api/middleware/errorHandler');
 const kafkaProducer = require('./kafka/kafkaProducer');
 const { initializeSagaCoordinator } = require('./services/orderService');
 const { createMetrics } = require('../../shared/metrics/metricsMiddleware');
+const { createGraphqlAuthMiddleware } = require('../../shared/middleware/graphqlAuth');
 const promClient = require('prom-client');
 
 const app = express();
@@ -25,27 +31,12 @@ const { middleware: metricsMiddleware, endpoint: metricsEndpoint } = createMetri
 app.use(metricsMiddleware);
 app.get('/metrics', metricsEndpoint);
 
-// GraphQL Authentication Middleware to prevent direct access
-const graphqlAuthMiddleware = (req, res, next) => {
-  const internalToken = req.headers['x-internal-gateway-token'];
-
-  // Verify internal gateway token for service-to-service auth
-  if (!internalToken) {
-    return res.status(403).json({
-      error: 'Direct GraphQL access forbidden. Use API Gateway at http://localhost:4000/graphql'
-    });
-  }
-
-  try {
-    // Verify internal gateway token
-    jwt.verify(internalToken, process.env.INTERNAL_JWT_SECRET || 'internal-secret');
-
-    // Allow request to proceed - user auth will be handled by resolvers
-    next();
-  } catch (error) {
-    return res.status(403).json({ error: 'Invalid internal gateway token' });
-  }
-};
+const graphqlAuthMiddleware = createGraphqlAuthMiddleware({
+  serviceName: 'order-service',
+  verifyInternalToken: jwt.verify,
+  internalJwtSecret: process.env.INTERNAL_JWT_SECRET,
+  gatewayUrl: process.env.GATEWAY_URL || 'http://localhost:4000',
+});
 // Middleware
 app.use(cors({
   // Only allow gateway origin for GraphQL
@@ -57,7 +48,10 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 app.use(logger);
 
 // REST API routes
-app.use('/api', orderRoutes);
+app.use('/api', buyerOrderRouter);
+app.use('/api', sellerOrderRouter);
+app.use('/api', authenticatedOrderRouter);
+app.use('/internal', internalOrderRouter);
 
 // Error handling middleware
 app.use(errorHandler);

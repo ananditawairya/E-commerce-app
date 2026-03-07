@@ -171,6 +171,22 @@ class OrderController {
     try {
       const { id } = req.params;
       const order = await orderService.getOrderById(id);
+
+      if (req.user) {
+        const userId = String(req.user.userId || '');
+        const role = req.user.role;
+        const isBuyer = role === 'buyer' && String(order.buyerId) === userId;
+        const isSeller = role === 'seller'
+          && Array.isArray(order.items)
+          && order.items.some((item) => String(item.sellerId) === userId);
+
+        if (!isBuyer && !isSeller) {
+          const error = new Error('Unauthorized');
+          error.code = 'UNAUTHORIZED';
+          throw error;
+        }
+      }
+
       res.json(order);
     } catch (error) {
       next(error);

@@ -6,11 +6,13 @@ const client = require('./client');
  * @return {object} Query resolver map.
  */
 function buildQueryResolvers() {
+  const authFromContext = (context) => context.req?.headers?.authorization;
+
   return {
     myCart: async (_, __, context) => {
       try {
         const user = await requireBuyer(context);
-        return await client.getCart(user.userId, context.correlationId);
+        return await client.getCart(user.userId, context.correlationId, authFromContext(context));
       } catch (error) {
         throw new Error(client.getApiErrorMessage(error));
       }
@@ -19,7 +21,11 @@ function buildQueryResolvers() {
     myOrders: async (_, __, context) => {
       try {
         const user = await requireBuyer(context);
-        return await client.getBuyerOrders(user.userId, context.correlationId);
+        return await client.getBuyerOrders(
+          user.userId,
+          context.correlationId,
+          authFromContext(context)
+        );
       } catch (error) {
         throw new Error(client.getApiErrorMessage(error));
       }
@@ -28,7 +34,11 @@ function buildQueryResolvers() {
     sellerOrders: async (_, __, context) => {
       try {
         const user = await requireSeller(context);
-        return await client.getSellerOrders(user.userId, context.correlationId);
+        return await client.getSellerOrders(
+          user.userId,
+          context.correlationId,
+          authFromContext(context)
+        );
       } catch (error) {
         throw new Error(client.getApiErrorMessage(error));
       }
@@ -37,7 +47,12 @@ function buildQueryResolvers() {
     sellerAnalytics: async (_, { days }, context) => {
       try {
         const user = await requireSeller(context);
-        return await client.getSellerAnalytics(user.userId, days, context.correlationId);
+        return await client.getSellerAnalytics(
+          user.userId,
+          days,
+          context.correlationId,
+          authFromContext(context)
+        );
       } catch (error) {
         throw new Error(client.getApiErrorMessage(error));
       }
@@ -46,7 +61,7 @@ function buildQueryResolvers() {
     order: async (_, { id }, context) => {
       try {
         const user = await authenticate(context);
-        const order = await client.getOrderById(id, context.correlationId);
+        const order = await client.getOrderById(id, context.correlationId, authFromContext(context));
 
         const isBuyer = user.role === 'buyer' && order.buyerId === user.userId;
         const isSeller = user.role === 'seller'

@@ -14,6 +14,15 @@ function registerRestProxyRoutes({
   authenticateToken,
   circuitBreakers,
 }) {
+  const publicProductMethods = new Set(['GET', 'HEAD', 'OPTIONS']);
+  const requireAuthForProductMutations = (req, res, next) => {
+    if (publicProductMethods.has(req.method)) {
+      return next();
+    }
+
+    return authenticateToken(req, res, next);
+  };
+
   app.use('/api/auth', (req, res, next) => getAuthLimiter()(req, res, next), async (req, res) => {
     try {
       const response = await circuitBreakers.auth.fire(`/api/users${req.path}`, {
@@ -33,13 +42,19 @@ function registerRestProxyRoutes({
     }
   });
 
-  app.use('/api/products', async (req, res) => {
+  app.use('/api/products', requireAuthForProductMutations, async (req, res) => {
     try {
       const response = await circuitBreakers.product.fire(`/api/products${req.path}`, {
         method: req.method,
         headers: {
           'Content-Type': 'application/json',
           'X-Correlation-ID': req.correlationId,
+          ...(req.headers.authorization
+            ? { Authorization: req.headers.authorization }
+            : {}),
+          ...(req.headers['x-internal-gateway-token']
+            ? { 'x-internal-gateway-token': req.headers['x-internal-gateway-token'] }
+            : {}),
         },
         body: req.method !== 'GET' ? JSON.stringify(req.body) : undefined,
       });
@@ -60,6 +75,12 @@ function registerRestProxyRoutes({
           'Content-Type': 'application/json',
           'X-Correlation-ID': req.correlationId,
           'X-User-ID': req.user.userId,
+          ...(req.headers.authorization
+            ? { Authorization: req.headers.authorization }
+            : {}),
+          ...(req.headers['x-internal-gateway-token']
+            ? { 'x-internal-gateway-token': req.headers['x-internal-gateway-token'] }
+            : {}),
         },
         body: req.method !== 'GET' ? JSON.stringify(req.body) : undefined,
       });
