@@ -129,7 +129,7 @@ services:
       kafka:
         condition: service_healthy
     environment:
-      NODE_ENV: development
+      NODE_ENV: production
       NODE_PATH: /app/auth-service/node_modules
       PORT: 4001
       MONGODB_URI: mongodb://mongodb:27017/auth_db
@@ -165,7 +165,7 @@ services:
       meilisearch:
         condition: service_started
     environment:
-      NODE_ENV: development
+      NODE_ENV: production
       NODE_PATH: /app/product-service/node_modules
       PORT: 4002
       MONGODB_URI: mongodb://mongodb:27017/product_db
@@ -204,7 +204,7 @@ services:
       kafka:
         condition: service_healthy
     environment:
-      NODE_ENV: development
+      NODE_ENV: production
       NODE_PATH: /app/order-service/node_modules
       PORT: 4003
       MONGODB_URI: mongodb://mongodb:27017/order_db
@@ -231,7 +231,7 @@ services:
       kafka:
         condition: service_healthy
     environment:
-      NODE_ENV: development
+      NODE_ENV: production
       NODE_PATH: /app/ai-service/node_modules
       PORT: 4004
       MONGODB_URI: mongodb://mongodb:27017/ai_service_db
@@ -271,7 +271,7 @@ services:
     ports:
       - "4000:4000"
     environment:
-      NODE_ENV: development
+      NODE_ENV: production
       PORT: 4000
       AUTH_SERVICE_URL: http://auth-service:4001
       PRODUCT_SERVICE_URL: http://product-service:4002

@@ -179,7 +179,7 @@ const startServer = async () => {
         const server = new ApolloServer({
             typeDefs,
             resolvers,
-            introspection: isDevelopment,
+            introspection: true,
             playground: isDevelopment,
             context: ({ req }) => {
                 const correlationId = req.correlationId || req.headers['x-correlation-id'] || 'unknown';

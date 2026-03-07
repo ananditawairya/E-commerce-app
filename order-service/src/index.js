@@ -140,7 +140,7 @@ const startServer = async () => {
   const server = new ApolloServer({
     typeDefs,
     resolvers,
-    introspection: isDevelopment, // Enable introspection in development
+    introspection: true,
     playground: false,   // Keep playground disabled for security
     context: ({ req }) => ({
       req,
