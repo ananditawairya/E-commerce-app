@@ -69,7 +69,7 @@ const isDevelopment = process.env.NODE_ENV !== 'production';
 const server = new ApolloServer({
   typeDefs,
   resolvers,
-  introspection: isDevelopment, // Enable introspection in development
+  introspection: true,
   playground: false,   // Keep playground disabled for security
   context: ({ req }) => ({
     req,
