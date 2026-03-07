@@ -2,7 +2,10 @@ const axios = require('axios');
 
 const { requireSeller } = require('../middleware/auth');
 const { formatDescriptionToBullets } = require('../utils/descriptionFormatter');
-const { API_BASE_URL } = require('./productResolvers/constants');
+const {
+  API_BASE_URL,
+  INTERNAL_API_BASE_URL,
+} = require('./productResolvers/constants');
 const {
   getErrorMessage,
   getParentProductFromVariantInfo,
@@ -23,6 +26,7 @@ const Mutation = createMutationResolvers({
   axios,
   requireSeller,
   API_BASE_URL,
+  INTERNAL_API_BASE_URL,
   getErrorMessage,
 });
 

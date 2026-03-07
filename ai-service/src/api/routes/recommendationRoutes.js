@@ -2,24 +2,37 @@ const express = require('express');
 
 const recommendationService = require('../../services/recommendationService');
 const semanticSearchService = require('../../services/semanticSearchService');
+const { requireSellerRestUser, requireInternalService } = require('../../middleware/auth');
 const { createRecommendationHandlers } = require('./recommendation/handlers');
 
-const router = express.Router();
+const publicRecommendationRouter = express.Router();
+const adminRecommendationRouter = express.Router();
+const internalRecommendationRouter = express.Router();
+
 const handlers = createRecommendationHandlers({
   recommendationService,
   semanticSearchService,
 });
 
-router.get('/semantic/status', handlers.getSemanticStatus);
-router.post('/semantic/reindex', handlers.reindexSemantic);
-router.post('/semantic/invalidate', handlers.invalidateSemantic);
-router.get('/semantic/search', handlers.searchSemantic);
+// Public/user-facing routes
+publicRecommendationRouter.get('/similar/:productId', handlers.getSimilarProducts);
+publicRecommendationRouter.get('/trending', handlers.getTrendingProducts);
+publicRecommendationRouter.get('/recent/:userId', handlers.getRecentlyViewed);
+publicRecommendationRouter.get('/:userId', handlers.getRecommendations);
 
-router.get('/similar/:productId', handlers.getSimilarProducts);
-router.get('/trending', handlers.getTrendingProducts);
-router.get('/recent/:userId', handlers.getRecentlyViewed);
+// Admin/operational routes
+adminRecommendationRouter.use(requireSellerRestUser);
+adminRecommendationRouter.get('/semantic/status', handlers.getSemanticStatus);
+adminRecommendationRouter.post('/semantic/reindex', handlers.reindexSemantic);
+adminRecommendationRouter.post('/semantic/invalidate', handlers.invalidateSemantic);
+adminRecommendationRouter.get('/semantic/search', handlers.searchSemantic);
 
-router.post('/track', handlers.trackEvent);
-router.get('/:userId', handlers.getRecommendations);
+// Internal service routes
+internalRecommendationRouter.use(requireInternalService);
+internalRecommendationRouter.post('/track', handlers.trackEvent);
 
-module.exports = router;
+module.exports = {
+  publicRecommendationRouter,
+  adminRecommendationRouter,
+  internalRecommendationRouter,
+};

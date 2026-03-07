@@ -6,16 +6,22 @@ const express = require('express');
 const { ApolloServer } = require('apollo-server-express');
 const mongoose = require('mongoose');
 const cors = require('cors');
+const jwt = require('jsonwebtoken');
 
 const typeDefs = require('./schema/recommendationSchema');
 const resolvers = require('./resolvers/recommendationResolvers');
-const recommendationRoutes = require('./api/routes/recommendationRoutes');
+const {
+    publicRecommendationRouter,
+    adminRecommendationRouter,
+    internalRecommendationRouter,
+} = require('./api/routes/recommendationRoutes');
 const logger = require('./api/middleware/logger');
 const errorHandler = require('./api/middleware/errorHandler');
 const kafkaConsumer = require('./kafka/kafkaConsumer');
 const cacheService = require('./services/cacheService');
 const semanticSearchService = require('./services/semanticSearchService');
 const { createMetrics } = require('../../shared/metrics/metricsMiddleware');
+const { createGraphqlAuthMiddleware } = require('../../shared/middleware/graphqlAuth');
 const promClient = require('prom-client');
 
 const app = express();
@@ -25,6 +31,12 @@ const { middleware: metricsMiddleware, endpoint: metricsEndpoint } = createMetri
 app.use(metricsMiddleware);
 app.get('/metrics', metricsEndpoint);
 const isDevelopment = process.env.NODE_ENV !== 'production';
+const graphqlAuthMiddleware = createGraphqlAuthMiddleware({
+    serviceName: 'ai-service',
+    verifyInternalToken: jwt.verify,
+    internalJwtSecret: process.env.INTERNAL_JWT_SECRET,
+    gatewayUrl: process.env.GATEWAY_URL || 'http://localhost:4000',
+});
 
 const CHAT_RATE_LIMIT_WINDOW_MS = Number.parseInt(
     process.env.AI_CHAT_RATE_LIMIT_WINDOW_MS || '60000',
@@ -99,7 +111,10 @@ app.use(express.urlencoded({ limit: '10mb', extended: true }));
 app.use(logger);
 
 // REST API routes
-app.use('/api/recommendations', recommendationRoutes);
+app.use('/api/recommendations', adminRecommendationRouter);
+app.use('/api/recommendations', internalRecommendationRouter);
+app.use('/api/recommendations', publicRecommendationRouter);
+app.use('/internal/recommendations', internalRecommendationRouter);
 
 // Error handling middleware
 app.use(errorHandler);
@@ -206,7 +221,7 @@ const startServer = async () => {
         });
 
         await server.start();
-        app.use('/graphql', graphqlChatRateLimiter);
+        app.use('/graphql', graphqlAuthMiddleware, graphqlChatRateLimiter);
         server.applyMiddleware({ app, path: '/graphql' });
 
         const PORT = process.env.PORT || 4004;

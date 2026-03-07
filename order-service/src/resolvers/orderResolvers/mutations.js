@@ -6,6 +6,8 @@ const client = require('./client');
  * @return {object} Mutation resolver map.
  */
 function buildMutationResolvers() {
+  const authFromContext = (context) => context.req?.headers?.authorization;
+
   return {
     addToCart: async (_, { productId, productName, variantId, variantName, quantity, price }, context) => {
       try {
@@ -27,7 +29,8 @@ function buildMutationResolvers() {
 
         const stockInfo = await client.getProductStock(productId, variantId, context.correlationId);
 
-        const cart = await client.getCart(user.userId, context.correlationId);
+        const authHeader = authFromContext(context);
+        const cart = await client.getCart(user.userId, context.correlationId, authHeader);
 
         const existingItem = cart.items.find(
           (item) => item.productId === productId
@@ -54,7 +57,8 @@ function buildMutationResolvers() {
             quantity,
             price,
           },
-          context.correlationId
+          context.correlationId,
+          authFromContext(context)
         );
       } catch (error) {
         throw new Error(client.getApiErrorMessage(error));
@@ -78,7 +82,8 @@ function buildMutationResolvers() {
         return await client.updateCartItem(
           user.userId,
           { productId, variantId, quantity },
-          context.correlationId
+          context.correlationId,
+          authFromContext(context)
         );
       } catch (error) {
         throw new Error(client.getApiErrorMessage(error));
@@ -92,7 +97,8 @@ function buildMutationResolvers() {
         return await client.removeFromCart(
           user.userId,
           { productId, variantId },
-          context.correlationId
+          context.correlationId,
+          authFromContext(context)
         );
       } catch (error) {
         throw new Error(client.getApiErrorMessage(error));
@@ -103,7 +109,7 @@ function buildMutationResolvers() {
       try {
         const user = await requireBuyer(context);
 
-        await client.clearCart(user.userId, context.correlationId);
+        await client.clearCart(user.userId, context.correlationId, authFromContext(context));
         return true;
       } catch (error) {
         return false;
@@ -114,7 +120,8 @@ function buildMutationResolvers() {
       try {
         const user = await requireBuyer(context);
 
-        const cart = await client.getCart(user.userId, context.correlationId);
+        const authHeader = authFromContext(context);
+        const cart = await client.getCart(user.userId, context.correlationId, authHeader);
 
         if (!cart || cart.items.length === 0) {
           throw new Error('Cart is empty');
@@ -160,7 +167,8 @@ function buildMutationResolvers() {
             totalAmount,
             shippingAddress,
           },
-          context.correlationId
+          context.correlationId,
+          authHeader
         );
 
         context.log.info({
@@ -168,7 +176,7 @@ function buildMutationResolvers() {
           orderIds: orders.map((order) => order.orderId),
         }, 'Orders created, stock deduction will be processed via Kafka');
 
-        await client.clearCart(user.userId, context.correlationId);
+        await client.clearCart(user.userId, context.correlationId, authHeader);
 
         return orders[0];
       } catch (error) {
@@ -184,7 +192,8 @@ function buildMutationResolvers() {
           orderId,
           user.userId,
           status,
-          context.correlationId
+          context.correlationId,
+          authFromContext(context)
         );
       } catch (error) {
         throw new Error(client.getApiErrorMessage(error));
@@ -198,7 +207,8 @@ function buildMutationResolvers() {
         return await client.cancelOrder(
           orderId,
           user.userId,
-          context.correlationId
+          context.correlationId,
+          authFromContext(context)
         );
       } catch (error) {
         throw new Error(client.getApiErrorMessage(error));

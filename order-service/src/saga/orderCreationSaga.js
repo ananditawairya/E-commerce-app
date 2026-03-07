@@ -2,8 +2,18 @@
 // Enhanced validation with better error handling for missing products
 
 const axios = require('axios');
+const jwt = require('jsonwebtoken');
 
-const PRODUCT_API_URL = process.env.PRODUCT_API_URL || 'http://localhost:4002/api/products';
+const INTERNAL_PRODUCT_API_URL = process.env.INTERNAL_PRODUCT_API_URL || 'http://localhost:4002/internal/products';
+
+const createInternalHeaders = (correlationId) => ({
+  'X-Correlation-ID': correlationId,
+  'x-internal-gateway-token': jwt.sign(
+    { service: 'order-service', timestamp: Date.now() },
+    process.env.INTERNAL_JWT_SECRET || 'internal-secret',
+    { expiresIn: '2m' }
+  ),
+});
 
 // Group items by seller for coordinated processing
 const groupItemsBySeller = (items) => {
@@ -35,12 +45,10 @@ const orderCreationSaga = {
           console.log(`🔍 Validating: Product ${item.productId}, Variant ${item.variantId}, Quantity ${item.quantity}`);
           try {
             const response = await axios.get(
-              `${PRODUCT_API_URL}/${item.productId}/stock`,
+              `${INTERNAL_PRODUCT_API_URL}/${item.productId}/stock`,
               {
                 params: { variantId: item.variantId },
-                headers: {
-                  'X-Correlation-ID': correlationId,
-                },
+                headers: createInternalHeaders(correlationId),
                 timeout: 5000,
               }
             );

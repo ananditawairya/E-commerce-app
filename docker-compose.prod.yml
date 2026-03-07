@@ -170,6 +170,7 @@ services:
       PORT: 4002
       MONGODB_URI: mongodb://mongodb:27017/product_db
       PRODUCT_API_URL: http://product-service:4002/api/products
+      INTERNAL_PRODUCT_API_URL: http://product-service:4002/internal/products
       AUTH_API_URL: http://auth-service:4001/api/users
       INTERNAL_JWT_SECRET: ${INTERNAL_JWT_SECRET:-your-internal-service-secret-here}
       KAFKA_BROKERS: kafka:9093
@@ -209,6 +210,7 @@ services:
       MONGODB_URI: mongodb://mongodb:27017/order_db
       ORDER_API_URL: http://order-service:4003/api
       PRODUCT_API_URL: http://product-service:4002/api/products
+      INTERNAL_PRODUCT_API_URL: http://product-service:4002/internal/products
       AUTH_API_URL: http://auth-service:4001/api/users
       INTERNAL_JWT_SECRET: ${INTERNAL_JWT_SECRET:-your-internal-service-secret-here}
       KAFKA_BROKERS: kafka:9093
@@ -235,6 +237,7 @@ services:
       MONGODB_URI: mongodb://mongodb:27017/ai_service_db
       PRODUCT_API_URL: http://product-service:4002/api/products
       ORDER_API_URL: http://order-service:4003/api/orders
+      AUTH_API_URL: http://auth-service:4001/api/users
       PRODUCT_SERVICE_URL: http://product-service:4002
       INTERNAL_JWT_SECRET: ${INTERNAL_JWT_SECRET:-your-internal-service-secret-here}
       JWT_SECRET: ${JWT_SECRET:-your-super-secret-jwt-key-here}
