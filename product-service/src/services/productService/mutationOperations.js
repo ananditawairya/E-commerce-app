@@ -65,6 +65,71 @@ function validateVariants(variants) {
 }
 
 /**
+ * Preserves variant identity on updates to avoid breaking stock restoration.
+ * Matches by explicit id first, then by SKU, then by index as a fallback.
+ * @param {object[]} existingVariants Existing product variants.
+ * @param {object[]} incomingVariants Incoming update variants.
+ * @return {object[]} Variants with stable _id when possible.
+ */
+function preserveVariantIdentity(existingVariants, incomingVariants) {
+  const existingBySku = new Map();
+  const currentVariants = Array.isArray(existingVariants) ? existingVariants : [];
+
+  currentVariants.forEach((variant) => {
+    const sku = typeof variant?.sku === 'string' ? variant.sku.trim() : '';
+    if (sku) {
+      existingBySku.set(sku, variant._id);
+    }
+  });
+
+  const assignedIds = new Set();
+
+  return incomingVariants.map((variant, index) => {
+    const normalizedVariant = { ...variant };
+    let resolvedId = null;
+
+    const explicitId = typeof variant?._id === 'string' && variant._id.trim()
+      ? variant._id.trim()
+      : (
+        typeof variant?.id === 'string' && variant.id.trim()
+          ? variant.id.trim()
+          : null
+      );
+
+    if (explicitId && !assignedIds.has(explicitId)) {
+      resolvedId = explicitId;
+    }
+
+    if (!resolvedId) {
+      const incomingSku = typeof variant?.sku === 'string' ? variant.sku.trim() : '';
+      const skuMatchId = incomingSku ? existingBySku.get(incomingSku) : null;
+      if (skuMatchId && !assignedIds.has(skuMatchId)) {
+        resolvedId = skuMatchId;
+      }
+    }
+
+    if (!resolvedId) {
+      const indexedMatchId = currentVariants[index]?._id;
+      if (
+        typeof indexedMatchId === 'string'
+        && indexedMatchId.trim()
+        && !assignedIds.has(indexedMatchId)
+      ) {
+        resolvedId = indexedMatchId;
+      }
+    }
+
+    if (resolvedId) {
+      normalizedVariant._id = resolvedId;
+      assignedIds.add(resolvedId);
+    }
+
+    delete normalizedVariant.id;
+    return normalizedVariant;
+  });
+}
+
+/**
  * Schedules semantic index + event publish after create.
  * @param {{
  *   productSemanticSearchService: object,
@@ -218,6 +283,10 @@ async function updateProduct(deps, productId, sellerId, input, correlationId) {
       throw error;
     }
     validateVariants(sanitizedInput.variants);
+    sanitizedInput.variants = preserveVariantIdentity(
+      product.variants,
+      sanitizedInput.variants
+    );
   }
 
   Object.assign(product, sanitizedInput);
