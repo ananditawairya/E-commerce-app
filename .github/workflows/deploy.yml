@@ -16,6 +16,11 @@ on:
         required: false
         default: "false"
         type: boolean
+      image_tag:
+        description: "GHCR image tag to deploy (default: latest)"
+        required: false
+        default: "latest"
+        type: string
 
 concurrency:
   group: deploy-ec2
@@ -51,6 +56,8 @@ jobs:
             export PRODUCT_SEARCH_ENGINE_ENABLED='${{ vars.PRODUCT_SEARCH_ENGINE_ENABLED || 'true' }}'
             export SEARCH_SEMANTIC_ENABLED='${{ vars.SEARCH_SEMANTIC_ENABLED || 'true' }}'
             export OLLAMA_EMBED_MODEL='${{ vars.OLLAMA_EMBED_MODEL || 'embeddinggemma' }}'
+            export GHCR_OWNER='ananditawairya'
+            export IMAGE_TAG='${{ inputs.image_tag }}'
             export DEPLOY_BRANCH='${{ github.ref_name }}'
             export DEPLOY_COMMIT_SHA='${{ github.sha }}'
             chmod +x scripts/deploy.sh
