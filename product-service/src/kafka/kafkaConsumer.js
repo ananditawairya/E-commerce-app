@@ -152,7 +152,8 @@ class ProductServiceConsumer {
           item.variantId,
           item.quantity,
           orderId,
-          correlationId
+          correlationId,
+          item.variantName
         );
 
         restorationLog.push({
@@ -196,6 +197,14 @@ class ProductServiceConsumer {
     if (failCount > 0) {
       console.error(`⚠️ Some items failed to restore:`, 
         restorationLog.filter(r => r.status === 'failed')
+      );
+    }
+
+    if (failCount > 0 && successCount === 0) {
+      const failedItems = restorationLog.filter((result) => result.status === 'failed');
+      throw new Error(
+        `All stock restorations failed for order ${orderId}: `
+        + failedItems.map((result) => result.error).join('; ')
       );
     }
   }

@@ -224,16 +224,18 @@ class ProductService {
    * @param {number} quantity Quantity.
    * @param {string} orderId Order id.
    * @param {string} correlationId Correlation id.
+   * @param {string=} variantName Variant name fallback.
    * @return {Promise<boolean>} True when restored.
    */
-  restoreStock(productId, variantId, quantity, orderId, correlationId) {
+  restoreStock(productId, variantId, quantity, orderId, correlationId, variantName) {
     return inventoryOperations.restoreStock(
       this.deps,
       productId,
       variantId,
       quantity,
       orderId,
-      correlationId
+      correlationId,
+      variantName
     );
   }
 

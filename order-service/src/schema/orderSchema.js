@@ -11,6 +11,7 @@ const typeDefs = gql`
     variantName: String
     quantity: Int!
     price: Float!
+    availableStock: Int
   }
 
   type Cart {

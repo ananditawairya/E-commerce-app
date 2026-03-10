@@ -243,7 +243,7 @@ class ProductController {
   async restoreStock(req, res, next) {
     try {
       const { id } = req.params;
-      const { variantId, quantity, orderId } = req.body;
+      const { variantId, quantity, orderId, variantName } = req.body;
 
       req.log.info({
         productId: id,
@@ -252,7 +252,15 @@ class ProductController {
         orderId,
       }, 'Restoring stock');
 
-      await productService.restoreStock(id, variantId, quantity, orderId, req.correlationId);
+      // variantName is optional and used as a fallback when variant ids drifted.
+      await productService.restoreStock(
+        id,
+        variantId,
+        quantity,
+        orderId,
+        req.correlationId,
+        variantName
+      );
 
       req.log.info({
         productId: id,

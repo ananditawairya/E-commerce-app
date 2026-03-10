@@ -2,6 +2,16 @@ const { authenticate, requireBuyer, requireSeller } = require('../../middleware/
 const client = require('./client');
 
 /**
+ * Checks whether stock fetch failure indicates stale/missing variant.
+ * @param {unknown} error Rejection reason.
+ * @return {boolean} True when variant no longer exists.
+ */
+function isVariantNotFoundError(error) {
+  const message = typeof error?.message === 'string' ? error.message : '';
+  return /variant not found/i.test(message);
+}
+
+/**
  * Builds query resolver map.
  * @return {object} Query resolver map.
  */
@@ -12,7 +22,45 @@ function buildQueryResolvers() {
     myCart: async (_, __, context) => {
       try {
         const user = await requireBuyer(context);
-        return await client.getCart(user.userId, context.correlationId, authFromContext(context));
+        const cart = await client.getCart(
+          user.userId,
+          context.correlationId,
+          authFromContext(context)
+        );
+
+        if (!cart || !Array.isArray(cart.items) || cart.items.length === 0) {
+          return cart;
+        }
+
+        const stockChecks = await Promise.allSettled(
+          cart.items.map((item) => (
+            client.getProductStock(item.productId, item.variantId, context.correlationId)
+          ))
+        );
+
+        const items = cart.items.map((item, index) => {
+          const stockResult = stockChecks[index];
+          if (stockResult?.status !== 'fulfilled') {
+            return {
+              ...item,
+              // Stale variant ids should behave as out-of-stock in cart UI.
+              availableStock: isVariantNotFoundError(stockResult?.reason) ? 0 : null,
+            };
+          }
+
+          const rawStock = Number.parseInt(stockResult.value?.stock, 10);
+          return {
+            ...item,
+            availableStock: Number.isFinite(rawStock)
+              ? Math.max(0, rawStock)
+              : null,
+          };
+        });
+
+        return {
+          ...cart,
+          items,
+        };
       } catch (error) {
         throw new Error(client.getApiErrorMessage(error));
       }

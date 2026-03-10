@@ -2,6 +2,16 @@ const { requireBuyer, requireSeller } = require('../../middleware/auth');
 const client = require('./client');
 
 /**
+ * Checks whether upstream stock failure is due to missing variant.
+ * @param {unknown} error Upstream error.
+ * @return {boolean} True when variant no longer exists.
+ */
+function isVariantNotFoundError(error) {
+  const message = client.getApiErrorMessage(error);
+  return /variant not found/i.test(message);
+}
+
+/**
  * Builds mutation resolver map.
  * @return {object} Mutation resolver map.
  */
@@ -68,14 +78,36 @@ function buildMutationResolvers() {
     updateCartItem: async (_, { productId, variantId, quantity }, context) => {
       try {
         const user = await requireBuyer(context);
+        const authHeader = authFromContext(context);
+        const cart = await client.getCart(user.userId, context.correlationId, authHeader);
+
+        const existingItem = cart?.items?.find(
+          (item) => item.productId === productId
+            && (item.variantId || null) === (variantId || null)
+        );
+
+        if (!existingItem) {
+          throw new Error('Item not found in cart');
+        }
 
         if (quantity > 0) {
-          const stockInfo = await client.getProductStock(productId, variantId, context.correlationId);
+          const isIncreasingQuantity = quantity > existingItem.quantity;
+          if (isIncreasingQuantity) {
+            let stockInfo;
+            try {
+              stockInfo = await client.getProductStock(productId, variantId, context.correlationId);
+            } catch (stockError) {
+              if (isVariantNotFoundError(stockError)) {
+                throw new Error(`Insufficient stock. Available: 0, Requested: ${quantity}`);
+              }
+              throw stockError;
+            }
 
-          if (quantity > stockInfo.stock) {
-            throw new Error(
-              `Insufficient stock. Available: ${stockInfo.stock}, Requested: ${quantity}`
-            );
+            if (quantity > stockInfo.stock) {
+              throw new Error(
+                `Insufficient stock. Available: ${stockInfo.stock}, Requested: ${quantity}`
+              );
+            }
           }
         }
 
@@ -83,7 +115,7 @@ function buildMutationResolvers() {
           user.userId,
           { productId, variantId, quantity },
           context.correlationId,
-          authFromContext(context)
+          authHeader
         );
       } catch (error) {
         throw new Error(client.getApiErrorMessage(error));
@@ -128,7 +160,18 @@ function buildMutationResolvers() {
         }
 
         const stockValidationPromises = cart.items.map(async (item) => {
-          const stockInfo = await client.getProductStock(item.productId, item.variantId, context.correlationId);
+          let stockInfo;
+          try {
+            stockInfo = await client.getProductStock(item.productId, item.variantId, context.correlationId);
+          } catch (stockError) {
+            if (isVariantNotFoundError(stockError)) {
+              throw new Error(
+                `Insufficient stock for ${item.productName}${item.variantId ? ` (${item.variantName})` : ''}. `
+                + `Available: 0, Requested: ${item.quantity}`
+              );
+            }
+            throw stockError;
+          }
 
           if (item.quantity > stockInfo.stock) {
             throw new Error(
