@@ -40,8 +40,23 @@ is_true() {
 #######################################
 service_exists() {
   local service_name="${1:-}"
-  docker compose -f "${COMPOSE_FILE}" config --services \
-    | grep -q "^${service_name}$"
+  local configured_services
+
+  if configured_services="$(docker compose -f "${COMPOSE_FILE}" config --services 2>/dev/null)"; then
+    if printf '%s\n' "${configured_services}" | grep -Fxq "${service_name}"; then
+      return 0
+    fi
+  fi
+
+  # Fallback: detect compose-managed containers even if config parsing fails.
+  if docker ps -a \
+    --filter "label=com.docker.compose.service=${service_name}" \
+    --format '{{.ID}}' \
+    | grep -q '.'; then
+    return 0
+  fi
+
+  return 1
 }
 
 #######################################
@@ -160,7 +175,8 @@ init_ai() {
   fi
 
   if ! service_exists "meilisearch"; then
-    log::err "PRODUCT_SEARCH_ENGINE_ENABLED=true but meilisearch service not found"
+    log::warn "PRODUCT_SEARCH_ENGINE_ENABLED=true but meilisearch service could not be verified"
+    log::warn "Continuing with reindex attempts; failures are handled by retry/fallback policy"
   fi
 
   local attempt
