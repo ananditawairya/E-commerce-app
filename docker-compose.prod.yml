@@ -117,7 +117,7 @@ services:
   # logic for inter-service connectivity.
 
   auth-service:
-    image: ghcr.io/ananditawairya/ecom-auth-service:latest
+    image: ghcr.io/${GHCR_OWNER:-ananditawairya}/ecom-auth-service:${IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: auth-service/Dockerfile
@@ -147,7 +147,7 @@ services:
       - ecommerce-network
 
   product-service:
-    image: ghcr.io/ananditawairya/ecom-product-service:latest
+    image: ghcr.io/${GHCR_OWNER:-ananditawairya}/ecom-product-service:${IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: product-service/Dockerfile
@@ -192,7 +192,7 @@ services:
       - ecommerce-network
 
   order-service:
-    image: ghcr.io/ananditawairya/ecom-order-service:latest
+    image: ghcr.io/${GHCR_OWNER:-ananditawairya}/ecom-order-service:${IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: order-service/Dockerfile
@@ -219,7 +219,7 @@ services:
       - ecommerce-network
 
   ai-service:
-    image: ghcr.io/ananditawairya/ecom-ai-service:latest
+    image: ghcr.io/${GHCR_OWNER:-ananditawairya}/ecom-ai-service:${IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: ai-service/Dockerfile
@@ -255,7 +255,7 @@ services:
       - ecommerce-network
 
   graphql-gateway:
-    image: ghcr.io/ananditawairya/ecom-graphql-gateway:latest
+    image: ghcr.io/${GHCR_OWNER:-ananditawairya}/ecom-graphql-gateway:${IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: graphql-gateway/Dockerfile

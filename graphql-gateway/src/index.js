@@ -32,6 +32,12 @@ let httpServer = null;
 
 const serviceUrls = getServiceUrls();
 const internalJwtSecret = process.env.INTERNAL_JWT_SECRET;
+const STARTUP_MAX_ATTEMPTS = Number.isFinite(Number(process.env.GATEWAY_STARTUP_MAX_ATTEMPTS))
+  ? Math.max(1, Number.parseInt(process.env.GATEWAY_STARTUP_MAX_ATTEMPTS, 10))
+  : 12;
+const STARTUP_RETRY_MS = Number.isFinite(Number(process.env.GATEWAY_STARTUP_RETRY_MS))
+  ? Math.max(1000, Number.parseInt(process.env.GATEWAY_STARTUP_RETRY_MS, 10))
+  : 5000;
 
 const { middleware: metricsMiddleware, endpoint: metricsEndpoint } = createMetrics(
   promClient,
@@ -220,6 +226,39 @@ function logStartupSummary(port) {
 }
 
 /**
+ * Waits for downstream GraphQL services and retries schema introspection.
+ * This prevents crash-loops during container startup ordering.
+ * @return {Promise<object>} Stitched GraphQL schema.
+ */
+async function buildGatewaySchemaWithRetry() {
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= STARTUP_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      if (attempt > 1) {
+        console.log(
+          `⏳ Retrying schema introspection (${attempt}/${STARTUP_MAX_ATTEMPTS})...`
+        );
+      }
+      return await buildGatewaySchema();
+    } catch (error) {
+      lastError = error;
+
+      if (attempt === STARTUP_MAX_ATTEMPTS) {
+        break;
+      }
+
+      console.warn(
+        `⚠️  Schema introspection failed (attempt ${attempt}/${STARTUP_MAX_ATTEMPTS}): ${error.message}`
+      );
+      await new Promise((resolve) => setTimeout(resolve, STARTUP_RETRY_MS));
+    }
+  }
+
+  throw lastError;
+}
+
+/**
  * Starts the GraphQL gateway service.
  * @return {Promise<void>} Completion promise.
  */
@@ -238,7 +277,7 @@ async function startServer() {
     rateLimit
   ));
 
-  const gatewaySchema = await buildGatewaySchema();
+  const gatewaySchema = await buildGatewaySchemaWithRetry();
   await setupApolloServer(gatewaySchema);
 
   const port = process.env.PORT || 4000;
